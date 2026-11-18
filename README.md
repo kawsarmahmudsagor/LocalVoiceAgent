@@ -59,6 +59,30 @@ Then open http://127.0.0.1:8000.
 
 In browser mode, the microphone only works on `localhost` or over HTTPS.
 
+## Linux VM
+
+v2 runs on an Ubuntu 24.04 VM with an RTX 5090 (see `docs/superpowers/specs/2026-11-18-v2-model-switching-design.md` §2). The browser runs on your own PC and reaches the VM through an SSH tunnel.
+
+Run these from the repo root, in this order:
+
+1. `scripts/check_vm.sh` must print `OK`. If it reports a driver/library version mismatch, run `sudo reboot` and check again.
+2. `scripts/install_system_deps.sh` installs espeak-ng, ffmpeg, the PortAudio and ALSA headers and build tools. It uses sudo.
+3. `scripts/setup_venv.sh` creates `.venv` with `torch==2.7.1+cu128`, RealtimeSTT, RealtimeTTS (Kokoro) and the server. It also enables the gitleaks hooks and installs the web dependencies.
+4. `cp .env.example .env`. The defaults on Linux are `LLM_BACKEND=llamacpp`, `AUDIO_IO=browser` and `LLAMA_RUNTIME=docker`.
+5. `scripts/dev.sh` starts the API and the Vite dev server.
+
+llama-server runs from the Docker image `ghcr.io/ggml-org/llama.cpp:server-cuda`, and the app starts and stops the `voicebot-llama` container itself. If `logs/llama-server.log` shows `no kernel image is available`, the image has no `sm_120` kernels. In that case run `scripts/build_llama_image.sh`, then set `LLAMA_IMAGE=voicebot/llama-server:cuda12.8` in `.env`.
+
+**Open the UI from your PC:**
+```
+ssh -L 8000:localhost:8000 -L 5173:localhost:5173 xr23@<vm-ip>
+```
+Then open http://localhost:5173 (dev) or http://localhost:8000 (production build). The browser treats `localhost` as a secure context, so the microphone works with no certificate.
+
+**HTTPS on the LAN address (optional):** run `scripts/make_cert.sh [ip]`, then set `WEB_HOST=0.0.0.0`, `WEB_SSL_CERTFILE=certs/cert.pem` and `WEB_SSL_KEYFILE=certs/key.pem`. Open `https://<vm-ip>:8000` and accept the certificate once.
+
+**Not available on the VM:** the `transformers` backend, because its 19 GB checkpoint is outside the disk budget. Server audio (`AUDIO_IO=server`) is also unavailable, because the VM has no microphone or speakers, and the app refuses to start with it.
+
 ## Latency
 
 Every turn records a timestamp at each pipeline stage. The UI shows "Response: N ms" (end of speech, or a typed send, to first sound) with a per-stage breakdown; hover it for every mark and span. The server logs one `turn timing` line per turn and appends a JSON record to `logs/turns.jsonl` (for `latency_report`) and a readable block, with times in seconds and ms, to `logs/turns.log`.

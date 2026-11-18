@@ -32,3 +32,7 @@ graphify-out/.needs_update
 Thumbs.db
 .vscode/
 .idea/
+
+# HTTPS certificates (scripts/make_cert.sh) and the llama.cpp source for build_llama_image.sh
+certs/
+tools/llama.cpp-src/
