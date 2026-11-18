@@ -5,7 +5,7 @@ import { ChatTranscript } from "./components/ChatTranscript";
 import { Composer } from "./components/Composer";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { StatusBar } from "./components/StatusBar";
-import type { Defaults } from "./protocol";
+import type { Defaults, Role } from "./protocol";
 import { createExclusive } from "./exclusive";
 import { initialState, reducer } from "./state";
 import { VoiceSocket, socketUrl } from "./ws";
@@ -16,6 +16,7 @@ export default function App() {
   const [state, dispatch] = useReducer(reducer, initialState);
   const socket = useRef<VoiceSocket | null>(null);
   const player = useRef<Player | null>(null);
+  const playerRate = useRef<number | null>(null);
   const mic = useRef<{ stop(): void } | null>(null);
   const turnId = useRef<number | null>(null);
   const ackedTurn = useRef<number | null>(null);
@@ -44,8 +45,11 @@ export default function App() {
         dispatch({ kind: "connected", value: false });
       },
       onEvent: e => {
-        if (e.type === "config" && e.output_format && !player.current) {
+        if (e.type === "config" && e.output_format && playerRate.current !== e.output_format.sample_rate) {
+          // First config, or a TTS switch that changed the sample rate: never play at the wrong rate.
+          player.current?.close();
           player.current = createPlayer(e.output_format, ackPlayback);
+          playerRate.current = e.output_format.sample_rate;
         }
         if (e.type === "user_transcript") turnId.current = e.turn_id;
         dispatch({ kind: "server", event: e });
@@ -58,6 +62,7 @@ export default function App() {
       stopMic();
       player.current?.close();
       player.current = null;
+      playerRate.current = null;
       window.clearTimeout(debounce.current);
     };
   }, [stopMic]);
@@ -115,6 +120,10 @@ export default function App() {
     player.current?.flush();
   };
 
+  const onSelectModel = (role: Role, slug: string) => {
+    socket.current?.send({ type: "select_model", role, slug });
+  };
+
   const onClear = () => {
     socket.current?.send({ type: "clear" });
     dispatch({ kind: "clear" });
@@ -123,11 +132,12 @@ export default function App() {
 
   return (
     <div className="app">
-      <SettingsPanel config={state.config} settings={state.settings} onChange={onSettingsChange} />
+      <SettingsPanel config={state.config} settings={state.settings} onChange={onSettingsChange}
+        catalog={state.catalog} switching={state.switching} status={state.status} onSelectModel={onSelectModel} />
       <main className="main">
-        <ChatTranscript messages={state.messages} />
+        <ChatTranscript messages={state.messages} partial={state.partial} />
         <div className="dock">
-          <StatusBar connected={state.connected} status={state.status} metrics={state.metrics} error={state.error}
+          <StatusBar config={state.config} switchingSlug={state.switchingSlug} connected={state.connected} status={state.status} metrics={state.metrics} error={state.error}
             onDismissError={() => dispatch({ kind: "dismiss_error" })} />
           <Composer status={state.status} listening={state.listening} connected={state.connected}
             onToggleMic={() => void onToggleMic()} onSend={onSend} onStop={onStop} onClear={onClear} />

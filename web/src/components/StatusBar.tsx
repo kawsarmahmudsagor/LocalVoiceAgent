@@ -1,6 +1,8 @@
-import type { Metrics, SpanName, Status } from "../protocol";
+import type { Metrics, ServerConfig, SpanName, Status } from "../protocol";
 
 interface Props {
+  config?: ServerConfig | null;
+  switchingSlug?: string | null;
   connected: boolean;
   status: Status;
   metrics: Metrics | null;
@@ -17,14 +19,18 @@ const BREAKDOWN: [SpanName, string][] = [
   ["playback_ms", "play"],
 ];
 
-function tooltip(m: Metrics): string {
+function tooltip(m: Metrics, config?: ServerConfig | null): string {
   const fmt = (o: Record<string, number | null>) =>
     Object.entries(o).map(([k, v]) => `  ${k}: ${v ?? "-"}`).join("\n");
-  return `turn ${m.turn_id} (${m.source}${m.interrupted ? ", interrupted" : ""})\nspans (ms):\n${fmt(m.spans)}\nmarks (ms since start):\n${fmt(m.marks)}`;
+  const models = config?.stt_final !== undefined
+    ? `\nmodels: stt_final=${config?.stt_final} stt_realtime=${config?.stt_realtime} tts=${config?.tts}`
+    : "";
+  return `turn ${m.turn_id} (${m.source}${m.interrupted ? ", interrupted" : ""})${models}\nspans (ms):\n${fmt(m.spans)}\nmarks (ms since start):\n${fmt(m.marks)}`;
 }
 
-export function StatusBar({ connected, status, metrics, error, onDismissError }: Props) {
+export function StatusBar({ config, switchingSlug, connected, status, metrics, error, onDismissError }: Props) {
   const state = connected ? status : "disconnected";
+  const pillText = connected && switchingSlug ? `loading ${switchingSlug}` : state;
   const parts = metrics
     ? BREAKDOWN.filter(([k]) => metrics.spans[k] != null).map(([k, label]) => `${label} ${metrics.spans[k]}`)
     : [];
@@ -37,9 +43,9 @@ export function StatusBar({ connected, status, metrics, error, onDismissError }:
         </div>
       )}
       <div className="status-row">
-        <span className={`pill pill-${state}`}>{state}</span>
+        <span className={`pill pill-${switchingSlug && connected ? "loading" : state}`}>{pillText}</span>
         {metrics && (
-          <div className="metrics" title={tooltip(metrics)}>
+          <div className="metrics" title={tooltip(metrics, config)}>
             <span className="perceived">
               Response: {metrics.spans.perceived_ms != null ? `${metrics.spans.perceived_ms} ms` : "–"}
             </span>

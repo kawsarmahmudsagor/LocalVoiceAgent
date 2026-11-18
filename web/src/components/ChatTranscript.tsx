@@ -1,15 +1,15 @@
 import { useEffect, useRef } from "react";
 import type { ChatMessage } from "../state";
 
-export function ChatTranscript({ messages }: { messages: ChatMessage[] }) {
+export function ChatTranscript({ messages, partial }: { messages: ChatMessage[]; partial: string | null }) {
   const end = useRef<HTMLDivElement>(null);
   useEffect(() => {
     end.current?.scrollIntoView({ block: "end" });
-  }, [messages]);
+  }, [messages, partial]);
 
   return (
     <div className="transcript" role="log" aria-live="polite">
-      {messages.length === 0 && (
+      {messages.length === 0 && !partial && (
         <div className="empty">
           <p>Press the mic and start talking, or type a message below.</p>
         </div>
@@ -24,6 +24,12 @@ export function ChatTranscript({ messages }: { messages: ChatMessage[] }) {
           </div>
         </div>
       ))}
+      {partial && (
+        <div className="msg msg-user msg-partial" aria-live="off">
+          <div className="msg-role">You (live)</div>
+          <div className="msg-text">{partial}</div>
+        </div>
+      )}
       <div ref={end} />
     </div>
   );

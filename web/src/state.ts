@@ -1,4 +1,4 @@
-import type { Defaults, Metrics, ServerConfig, ServerEvent, Status } from "./protocol";
+import type { CatalogEntry, Defaults, Metrics, Role, ServerConfig, ServerEvent, Status } from "./protocol";
 
 export interface ChatMessage { id: number; role: "user" | "assistant"; text: string; streaming: boolean; interrupted: boolean }
 
@@ -12,6 +12,12 @@ export interface AppState {
   metrics: Metrics | null;
   turnId: number | null;
   error: string | null;
+  catalog: CatalogEntry[];
+  /** The role being switched, and its target slug, while a model loads. */
+  switching: Role | null;
+  switchingSlug: string | null;
+  /** Live realtime-STT text while the user speaks. */
+  partial: string | null;
 }
 
 export type Action =
@@ -33,7 +39,13 @@ export const initialState: AppState = {
   metrics: null,
   turnId: null,
   error: null,
+  catalog: [],
+  switching: null,
+  switchingSlug: null,
+  partial: null,
 };
+
+const CONFIG_KEY: Record<Role, "stt_final" | "stt_realtime" | "tts"> = { stt_final: "stt_final", stt_realtime: "stt_realtime", tts: "tts" };
 
 function nextId(messages: ChatMessage[]): number {
   return messages.length ? messages[messages.length - 1].id + 1 : 1;
@@ -60,6 +72,7 @@ function applyServer(state: AppState, e: ServerEvent): AppState {
     case "user_transcript":
       return {
         ...state,
+        partial: null,
         turnId: e.turn_id,
         messages: addMessage(state.messages, { role: "user", text: e.text, streaming: false, interrupted: false }),
       };
@@ -85,6 +98,17 @@ function applyServer(state: AppState, e: ServerEvent): AppState {
     }
     case "error":
       return { ...state, error: e.message };
+    case "catalog":
+      return { ...state, catalog: e.entries };
+    case "model_status": {
+      if (e.state === "loading") return { ...state, switching: e.role, switchingSlug: e.slug };
+      const cleared = { ...state, switching: null, switchingSlug: null };
+      if (e.state === "failed") return { ...cleared, error: e.message ?? `Could not load ${e.slug}` };
+      // STT switches send no new config: record the active slug here.
+      return state.config ? { ...cleared, config: { ...state.config, [CONFIG_KEY[e.role]]: e.slug } } : cleared;
+    }
+    case "user_partial":
+      return { ...state, partial: e.text };
   }
 }
 

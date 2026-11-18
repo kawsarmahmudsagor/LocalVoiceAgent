@@ -28,4 +28,12 @@ describe("reducer", () => {
     s = srv(s, { type: "error", code: "busy", message: "Busy" }); expect(s.error).toBe("Busy");
     s = reducer(reducer(s, { kind: "dismiss_error" }), { kind: "clear" }); expect(s.error).toBeNull(); expect(s.messages).toEqual([]);
   });
+  it("model_status, partial and catalog", () => {
+    let s = srv(initialState, { type: "catalog", entries: [{ slug: "kokoro" }] }); expect(s.catalog).toHaveLength(1);
+    s = srv(s, { type: "model_status", role: "tts", slug: "piper", state: "loading" }); expect(s.switching).toBe("tts");
+    s = srv(s, { type: "model_status", role: "tts", slug: "piper", state: "failed", message: "no" });
+    expect(s.switching).toBeNull(); expect(s.error).toBe("no");
+    s = srv(s, { type: "user_partial", text: "hel" }); expect(s.partial).toBe("hel");
+    s = srv(s, { type: "user_transcript", text: "hello", turn_id: 1 }); expect(s.partial).toBeNull();
+  });
 });
