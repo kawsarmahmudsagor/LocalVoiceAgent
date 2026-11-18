@@ -44,6 +44,8 @@ Both take effect on restart. Every other setting is listed with its default in [
 
 ## Run
 
+**One click:** `run-local.bat` in the repo root builds the UI, starts the API and opens the browser when it is ready. `run-local.bat dev` starts the API and the Vite dev server instead.
+
 **Development** (hot reload for the UI):
 ```powershell
 .\scripts\dev.ps1
