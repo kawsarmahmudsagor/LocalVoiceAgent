@@ -177,3 +177,11 @@ def test_set_recorder_and_output_format():
     a.set_output_format({"sample_rate": 22050, "channels": 1, "encoding": "pcm_s16le"})
     a.set_sink(lambda b: None); assert a.play(Stream(), lambda: None) == pytest.approx(2 / (2 * 22050))
     s = ServerAudio(Rec()); s.set_recorder(r2); assert s.recorder is r2
+
+def test_realtime_download_root_reaches_recorder():                       # final review
+    from dataclasses import replace
+    e = by_slug(load_catalog(POOL))
+    rt = replace(e["nemotron-rt"], options={**e["nemotron-rt"].options, "download_root": "models/sherpa-onnx"})
+    r = stt.make_recorder(Settings.load(env={}), use_microphone=False, recorder_cls=Rec, final=e["whisper-small-en"], realtime=rt)
+    assert r.kw["download_root"] == str(REPO_ROOT / "models/sherpa-onnx")
+    assert "download_root" not in r.kw["realtime_transcription_engine_options"]

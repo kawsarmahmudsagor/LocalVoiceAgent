@@ -56,7 +56,7 @@ device = "cpu"
 family = "sherpa"
 fetch = "sherpa:nemotron"
 streaming = true
-options = { provider = "cpu", num_threads = 4 }
+options = { provider = "cpu", num_threads = 4, download_root = "models/sherpa-onnx" }
 
 [[entry]]
 slug = "kroko-en-128-rt"

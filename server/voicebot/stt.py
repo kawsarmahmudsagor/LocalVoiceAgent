@@ -85,9 +85,13 @@ def entry_kwargs(final, realtime=None) -> dict:
         kw["download_root"] = _repo_path(opts.pop("download_root"))
     kw["transcription_engine_options"] = opts
     if realtime is not None:
+        rt_opts = dict(realtime.options)
+        rt_root = rt_opts.pop("download_root", None)
+        if rt_root is not None and "download_root" not in kw:  # one download_root serves both engines
+            kw["download_root"] = _repo_path(rt_root)
         kw.update(enable_realtime_transcription=True, realtime_transcription_engine=realtime.engine,
                   realtime_model_type=_repo_path(realtime.model),
-                  realtime_transcription_engine_options=dict(realtime.options))
+                  realtime_transcription_engine_options=rt_opts)
     else:
         kw["enable_realtime_transcription"] = False
     return kw

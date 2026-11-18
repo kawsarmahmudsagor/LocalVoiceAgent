@@ -1,8 +1,9 @@
 # Bench family "sherpa" (v2 plan Task 6). Paths are relative to the repo root: run uv from there.
 # python-dotenv: voicebot.config needs it (the server is installed with --no-deps).
 # RealtimeSTT's base requirements include torch, so pin the CUDA build here too.
+# faster-whisper: realtime runs use whisper-small-en as the final engine (run_stt.py).
 --extra-index-url https://download.pytorch.org/whl/cu128
 torch==2.7.1+cu128
 torchaudio==2.7.1+cu128
--e ./RealtimeSTT[sherpa-onnx,server]
+-e ./RealtimeSTT[sherpa-onnx,faster-whisper,server]
 python-dotenv

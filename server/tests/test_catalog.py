@@ -24,3 +24,8 @@ def test_duplicate_and_worker_group(tmp_path):
 def test_bad_fetch(tmp_path):
     with pytest.raises(CatalogError, match="fetch"):
         load_catalog(write(tmp_path, "[[entry]]\n" + BASE.format(s="a", r="final") + 'fetch="ftp:x"\n'))
+
+def test_sherpa_entries_point_at_fetched_models():                         # final review
+    e = by_slug(load_catalog(POOL))
+    for slug in ("sherpa-parakeet-v3", "nemotron-rt"):
+        assert e[slug].options.get("download_root") == "models/sherpa-onnx", slug

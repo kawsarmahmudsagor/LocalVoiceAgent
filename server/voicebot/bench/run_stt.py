@@ -27,13 +27,25 @@ BASELINE_FINAL = "whisper-small-en"
 HEALTH_TIMEOUT_S = 600
 
 
+def _engine_options(entry: Entry) -> dict:
+    """Engine options without download_root, which the server takes as its own --download-root flag."""
+    return {k: v for k, v in entry.options.items() if k != "download_root"}
+
+
 def server_command(final: Entry, port: int, realtime: Entry | None, python: str) -> list[str]:
     cmd = [python, "-m", "RealtimeSTT_server.production_server", "--host", "127.0.0.1", "--port", str(port),
-           "--engine", final.engine, "--model", final.model, "--device", final.device,
-           "--engine-options", json.dumps(final.options)]
+           "--engine", final.engine, "--model", final.model, "--device", final.device, "--language", "en",
+           "--engine-options", json.dumps(_engine_options(final))]
+    # compute_type and download_root are recorder-level settings: the reference server reads them from
+    # --compute-type / --download-root, not from --engine-options (example_fastapi_server/server.py).
+    if "compute_type" in final.options:
+        cmd += ["--compute-type", str(final.options["compute_type"])]
+    roots = [e.options["download_root"] for e in (final, realtime) if e is not None and "download_root" in e.options]
+    if roots:
+        cmd += ["--download-root", str(REPO_ROOT / roots[0])]
     if realtime is not None:
         cmd += ["--realtime-engine", realtime.engine, "--realtime-model", realtime.model,
-                "--realtime-engine-options", json.dumps(realtime.options)]
+                "--realtime-engine-options", json.dumps(_engine_options(realtime))]
     return cmd
 
 

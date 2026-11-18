@@ -18,4 +18,4 @@ def test_catalog_toml_round_trips(tmp_path):
     p = tmp_path / "c.toml"; p.write_text(text); e = by_slug(load_catalog(p))
     assert e["whisper-small-en"].vram_mb == 900 and e["nemotron-rt"].streaming and e["kokoro"].voice == "af_heart"
     assert (e["chatterbox"].runtime, e["chatterbox"].group) == ("worker", "bench-chatterbox")
-    assert e["nemotron-rt"].options == {"provider": "cpu", "num_threads": 4}
+    assert e["nemotron-rt"].options == {"provider": "cpu", "num_threads": 4, "download_root": "models/sherpa-onnx"}

@@ -50,3 +50,16 @@ def test_engine_kwargs_build_voice_objects(tmp_path):
     c = engine_kwargs(e["chatterbox"], mod, root=tmp_path)
     assert c == {"device": "cuda", "voice": ("cv", {"audio_prompt_path": str(tmp_path / "assets/ref_voice.wav")})}
     assert engine_kwargs(e["kokoro"], mod, root=tmp_path) == {"voice": "af_heart"}
+
+def test_server_command_lifts_recorder_level_options():                    # final review
+    e = by_slug(load_catalog(POOL))
+    cmd = server_command(e["sherpa-parakeet-v3"], 8766, None, "py")
+    assert cmd[cmd.index("--download-root") + 1] == str(REPO_ROOT / "models/sherpa-onnx")
+    assert "download_root" not in json.loads(cmd[cmd.index("--engine-options") + 1])
+    cmd = server_command(e["whisper-small-en"], 8766, None, "py")
+    assert cmd[cmd.index("--compute-type") + 1] == "float16" and cmd[cmd.index("--language") + 1] == "en"
+
+def test_realtime_families_can_run_the_baseline_final():                  # final review
+    for rt in [x for x in load_catalog(POOL) if x.role == "realtime"]:
+        req = (REPO_ROOT / "bench" / "families" / f"{rt.family}.txt").read_text()
+        assert "faster-whisper" in req, f"{rt.family} venv cannot run whisper-small-en as the final engine"
