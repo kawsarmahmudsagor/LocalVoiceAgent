@@ -114,3 +114,11 @@ def test_drain_audio_queue_empties_engine_and_wrapped_queues():
     s = Stream(); s.engine.queue = outer
     assert tts.drain_audio_queue(s) == 4 and inner.empty() and outer.empty()
     tts.drain_audio_queue(Stream())                     # engine without a queue: no error
+
+def test_realtimetts_shim_serializes_close_not_player_stop():
+    # Locking StreamPlayer.stop made Stop wait behind play()'s draining stop (speakers
+    # played out the reply). Only the PyAudio close needs serializing.
+    from RealtimeTTS.stream_player import AudioStream, StreamPlayer
+    tts.install_realtimetts_shims()
+    assert getattr(AudioStream.close_stream, "_voicebot_serialized", False)
+    assert not getattr(StreamPlayer.stop, "_voicebot_serialized", False)

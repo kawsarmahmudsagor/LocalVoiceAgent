@@ -22,15 +22,25 @@ def serialize_method(cls, name: str) -> None:
     setattr(cls, name, serialized)
 
 
+def install_realtimetts_shims() -> None:
+    """Runtime workaround for an upstream race (see VENDORED.md).
+
+    AudioStream.close_stream() checks and closes the PyAudio stream without a lock.
+    Stop (immediate player stop, on a helper thread) and play()'s own cleanup (draining
+    player stop) can both reach it, and a concurrent double close corrupts the heap
+    (Windows 0xc0000374). Only the close is serialized: locking StreamPlayer.stop as a
+    whole would make Stop wait until the draining stop had played out the buffer.
+    """
+    from RealtimeTTS.stream_player import AudioStream
+
+    serialize_method(AudioStream, "close_stream")
+
+
 def make_tts(settings: Settings, *, engine_cls=None, stream_cls=None):
     if engine_cls is None or stream_cls is None:
         from RealtimeTTS import KokoroEngine, TextToAudioStream
-        from RealtimeTTS.stream_player import StreamPlayer
 
-        # Runtime shim (see VENDORED.md): StreamPlayer.stop() closes the PyAudio stream
-        # without a lock. Stop (on a helper thread) and play()'s own cleanup both call it,
-        # and a concurrent double close corrupts the heap (0xc0000374).
-        serialize_method(StreamPlayer, "stop")
+        install_realtimetts_shims()
         engine_cls = engine_cls or KokoroEngine
         stream_cls = stream_cls or TextToAudioStream
     return stream_cls(engine_cls(voice=settings.tts_voice))

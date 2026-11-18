@@ -159,6 +159,15 @@ class VoiceSession:
         # runs on the web event loop, so stop the stream on a helper thread.
 
         def stop_stream() -> None:
+            # Silence the player first: stream.stop() sets RealtimeTTS's abort flags, after
+            # which play() runs its own cleanup with a draining (non-immediate) player stop
+            # that could otherwise take the player lock first and play out the buffer.
+            player = getattr(self.stream, "player", None)
+            if player is not None:
+                try:
+                    player.stop(immediate=True)
+                except Exception:
+                    log.exception("player.stop failed")
             try:
                 self.stream.stop()
             except Exception:

@@ -257,3 +257,14 @@ def test_turn_drops_audio_left_from_a_stopped_turn(session, stream, events):
     stream.engine.queue = queue.Queue(); stream.engine.queue.put(b"stale")
     session.handle({"type": "send_text", "text": "Hi"}); wait_for(lambda: events and events[-1].get("state") == "idle")
     assert stream.engine.queue.empty()
+
+def test_stop_silences_player_immediately_before_stream_stop(gated_session, stream, events):
+    # stream.stop() lets play() reach its own cleanup, which drains the speaker buffer
+    # (seconds of audio). The immediate player stop must happen first.
+    order = []
+    stream.player = NS(stop=lambda immediate=False: order.append(("player", immediate)))
+    real_stop = stream.stop
+    stream.stop = lambda: (order.append(("stream", None)), real_stop())
+    gated_session.handle({"type": "send_text", "text": "x"}); wait_for(lambda: "assistant_delta" in types(events))
+    gated_session.handle({"type": "stop_speaking"}); wait_for(lambda: len(order) == 2)
+    assert order == [("player", True), ("stream", None)]
