@@ -1,7 +1,7 @@
 #!/bin/sh
 # Block commits that contain secrets (staged changes only).
 if ! command -v gitleaks >/dev/null 2>&1; then
-  echo "pre-commit: gitleaks not found. Install it (winget install Gitleaks.Gitleaks) and retry." >&2
+  echo "pre-commit: gitleaks not found. Install it (Windows: winget install Gitleaks.Gitleaks; Ubuntu: sudo apt install gitleaks) and retry." >&2
   exit 1
 fi
 
