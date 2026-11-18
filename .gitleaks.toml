@@ -1,0 +1,13 @@
+# gitleaks config — extends the built-in ruleset.
+# Docs: https://github.com/gitleaks/gitleaks#configuration
+title = "LocalVoiceAgent gitleaks config"
+
+[extend]
+useDefault = true
+
+# Add project-specific allowlists here when a finding is a confirmed false
+# positive. Prefer an inline `# gitleaks:allow` comment on the line itself
+# over broad path allowlists.
+[[allowlists]]
+description = "Template env file holds placeholders only"
+paths = ['''(^|/)\.env\.example$''']

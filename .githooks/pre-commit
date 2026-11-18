@@ -1,0 +1,14 @@
+#!/bin/sh
+# Block commits that contain secrets (staged changes only).
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "pre-commit: gitleaks not found. Install it (winget install Gitleaks.Gitleaks) and retry." >&2
+  exit 1
+fi
+
+gitleaks git --pre-commit --staged --redact --no-banner --config .gitleaks.toml .
+status=$?
+if [ $status -ne 0 ]; then
+  echo "pre-commit: gitleaks found possible secrets. Commit blocked." >&2
+  echo "Remove the secret, or mark a confirmed false positive with '# gitleaks:allow'." >&2
+fi
+exit $status
