@@ -1,8 +1,7 @@
-import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import App from "./App";
+import "./styles.css";
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <div>Voice Playground</div>
-  </StrictMode>,
-);
+// No StrictMode: its double-mounted effects would open two WebSockets in dev, and
+// the single-client server would answer the second with session_busy.
+createRoot(document.getElementById("root")!).render(<App />);
