@@ -69,18 +69,21 @@ class FakePopen:
         self.proc = FakeProc(exit_code=self.exit_code); return self.proc
 
 def docker_settings(**env): return Settings.load(env={"LLAMA_RUNTIME": "docker", **env}, platform="linux")
+FREE = dict(port_check=lambda h, p: False)  # tests must not depend on whether 8081 is free on this machine
 
 def test_docker_command(tmp_path):
     srv = LlamaServer(docker_settings(), home=tmp_path)
     cmd = srv.command()
     assert cmd[:5] == ["docker", "run", "--rm", "--name", "voicebot-llama"] and "127.0.0.1:8081:8080" in cmd
     assert f"{tmp_path}/.cache/llama.cpp:/root/.cache/llama.cpp" in cmd
+    # newer llama.cpp caches -hf downloads in the Hugging Face cache: persist it, or every --rm start re-downloads
+    assert f"{tmp_path}/.cache/llama.cpp/hf:/root/.cache/huggingface" in cmd
     assert cmd[cmd.index("-hf") + 1] == "unsloth/Qwen3.5-9B-GGUF:Q4_K_M" and "--no-mmproj" in cmd
 
 def test_stale_container_removed_before_run(tmp_path):                    # Review Focus 3
     calls = []; fake_run = lambda c, **k: calls.append(c)
     srv = LlamaServer(docker_settings(), run=fake_run, which=lambda n: "/usr/bin/docker",
-                      popen=FakePopen(), status=lambda u, **k: 200, log_path=tmp_path / "l.log", home=tmp_path)
+                      popen=FakePopen(), status=lambda u, **k: 200, log_path=tmp_path / "l.log", home=tmp_path, **FREE)
     srv.start(); assert calls[0] == ["docker", "rm", "-f", "voicebot-llama"]
     srv.close(); assert ["docker", "stop", "-t", "5", "voicebot-llama"] in calls
 
@@ -91,7 +94,7 @@ def test_missing_docker():
 def test_sm120_hint(tmp_path):
     log = tmp_path / "l.log"
     srv = LlamaServer(docker_settings(), run=lambda c, **k: None, which=lambda n: "x", log_path=log, home=tmp_path,
-                      popen=FakePopen(exit_code=1, writes="CUDA error: no kernel image is available"), status=lambda u, **k: None)
+                      popen=FakePopen(exit_code=1, writes="CUDA error: no kernel image is available"), status=lambda u, **k: None, **FREE)
     with pytest.raises(LlamaServerError, match="build_llama_image.sh"): srv.start()
 
 def test_missing_image_pulled_before_health_timeout(tmp_path):            # e2e: pull counted against the timeout
@@ -102,7 +105,7 @@ def test_missing_image_pulled_before_health_timeout(tmp_path):            # e2e:
         return NS(returncode=1 if c[:3] == ["docker", "image", "inspect"] else 0)
     clock = Clock()
     srv = LlamaServer(docker_settings(LLAMA_START_TIMEOUT="5"), run=fake_run, which=lambda n: "x", popen=FakePopen(),
-                      status=lambda u, **k: 200, sleep=clock.sleep, clock=clock, log_path=tmp_path / "l.log", home=tmp_path)
+                      status=lambda u, **k: 200, sleep=clock.sleep, clock=clock, log_path=tmp_path / "l.log", home=tmp_path, **FREE)
     srv.start()
     assert ["docker", "pull", "ghcr.io/ggml-org/llama.cpp:server-cuda"] in calls
     assert calls.index(["docker", "pull", "ghcr.io/ggml-org/llama.cpp:server-cuda"]) < len(calls)
@@ -112,5 +115,5 @@ def test_failed_pull_raises(tmp_path):
     from types import SimpleNamespace as NS
     fake_run = lambda c, **k: NS(returncode=1)
     srv = LlamaServer(docker_settings(), run=fake_run, which=lambda n: "x", popen=FakePopen(), status=lambda u, **k: 200,
-                      log_path=tmp_path / "l.log", home=tmp_path)
+                      log_path=tmp_path / "l.log", home=tmp_path, **FREE)
     with pytest.raises(LlamaServerError, match="docker pull"): srv.start()

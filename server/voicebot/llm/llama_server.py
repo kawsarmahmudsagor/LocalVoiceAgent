@@ -82,7 +82,10 @@ class LlamaServer:
         if self.docker:
             return ["docker", "run", "--rm", "--name", CONTAINER, "--gpus", "all",
                     "-p", f"127.0.0.1:{s.llama_port}:8080",
-                    "-v", f"{self._home}/.cache/llama.cpp:/root/.cache/llama.cpp", s.llama_image,
+                    "-v", f"{self._home}/.cache/llama.cpp:/root/.cache/llama.cpp",
+                    # Newer llama.cpp stores -hf downloads in the Hugging Face cache. Persist it (in a folder of
+                    # its own: the container writes as root) so a --rm container does not re-download the GGUF.
+                    "-v", f"{self._home}/.cache/llama.cpp/hf:/root/.cache/huggingface", s.llama_image,
                     "-hf", s.llama_hf_repo, "--no-mmproj", "--jinja", "-ngl", "99", "-np", "1",
                     "-c", str(s.llama_ctx), "--host", "0.0.0.0", "--port", "8080"]
         return [str(s.llama_server_path), "-hf", s.llama_hf_repo, "--no-mmproj", "--jinja",
