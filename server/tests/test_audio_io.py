@@ -130,3 +130,12 @@ def test_timing_callbacks_keep_speech_end_through_real_endpoint_order():
     tm = TurnTimer(); cb = stt.timing_callbacks(tm)
     cb["on_turn_detection_start"](); cb["on_recording_stop"](); cb["on_turn_detection_stop"]()
     assert tm.has("speech_end") and tm.has("endpoint")
+
+def test_browser_audio_play_returns_seconds_sent():
+    r, sent = Rec(), []
+    a = BrowserAudio(r, {"sample_rate": 24000, "channels": 1}); a.set_sink(sent.append)
+    class OneSecond(Stream):
+        def play(self, **kw):
+            for _ in range(4): kw["on_audio_chunk"](b"\x00" * 12000)   # 4 x 6000 samples
+    assert a.play(OneSecond(), lambda: None) == 1.0
+    a.set_sink(None); assert a.play(OneSecond(), lambda: None) == 0.0  # nothing reached a browser

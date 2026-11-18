@@ -6,6 +6,7 @@ import { Composer } from "./components/Composer";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { StatusBar } from "./components/StatusBar";
 import type { Defaults } from "./protocol";
+import { createExclusive } from "./exclusive";
 import { initialState, reducer } from "./state";
 import { VoiceSocket, socketUrl } from "./ws";
 
@@ -71,7 +72,12 @@ export default function App() {
     }, SETTINGS_DEBOUNCE_MS);
   };
 
-  const onToggleMic = async () => {
+  // A second click while the permission prompt is open would start a second capture.
+  const micToggle = useRef(createExclusive()).current;
+
+  const onToggleMic = () => micToggle(toggleMic);
+
+  const toggleMic = async () => {
     player.current?.resume();
     const s = socket.current;
     if (!s || !state.config) return;

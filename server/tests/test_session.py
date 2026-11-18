@@ -63,12 +63,14 @@ class FakeAudio:
     def cut(self): self.cuts = getattr(self, "cuts", 0) + 1
     def set_sink(self, s): self.sink = s
     def on_client_audio(self, data): pass
+    play_seconds = None   # BrowserAudio returns the seconds of audio it sent to the browser
     def play(self, stream, on_first_audio):
         self.log.append("play"); first = True
         for chunk in stream.it:
             stream.consumed.append(chunk)
             if first: on_first_audio(); first = False
             if stream.stopped: break
+        return self.play_seconds
 
 
 class FakeBackend:
@@ -297,3 +299,19 @@ def test_close_does_not_hang_on_idle_recorder_abort(session, recorder):         
     session.handle({"type": "stop_listening"}); wait_for(lambda: recorder.active == 0)
     recorder.hang_on_idle_abort = True
     t0 = time.monotonic(); session.close(); assert time.monotonic() - t0 < 3
+
+def test_browser_turn_stays_open_until_audio_has_played(session, audio, events):       # review #2
+    # Kokoro synthesizes faster than real time; the turn (muted mic, Stop enabled) must
+    # last until the browser has played what it was sent.
+    audio.play_seconds = 0.6
+    t0 = time.monotonic(); session.handle({"type": "send_text", "text": "Hi"})
+    wait_for(lambda: "assistant_done" in types(events))
+    assert time.monotonic() - t0 >= 0.5 and audio.log[-1] == "mute:False"
+    assert [e["state"] for e in events if e["type"] == "status"][-2:] == ["speaking", "idle"]
+
+def test_stop_during_browser_playback_ends_turn_at_once(session, audio, events):        # review #2
+    audio.play_seconds = 5.0
+    session.handle({"type": "send_text", "text": "Hi"}); wait_for(lambda: "speaking" in [e.get("state") for e in events])
+    time.sleep(0.1); t0 = time.monotonic(); session.handle({"type": "stop_speaking"})
+    done = wait_for(lambda: next((e for e in events if e["type"] == "assistant_done"), None))
+    assert time.monotonic() - t0 < 0.5 and done["interrupted"] is True

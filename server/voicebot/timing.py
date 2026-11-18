@@ -72,6 +72,10 @@ class TurnTimer:
     def has(self, stage: str) -> bool:
         return self.get(stage) is not None
 
+    def now(self) -> float:
+        """The timer's clock, for waiting relative to recorded marks."""
+        return self._clock()
+
     def reset(self) -> None:
         with self._lock:
             self._marks.clear()

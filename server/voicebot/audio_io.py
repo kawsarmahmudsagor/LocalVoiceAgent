@@ -18,7 +18,9 @@ class AudioIO(Protocol):
     def on_client_audio(self, data: bytes) -> None: ...
     def mute_input(self, muted: bool) -> None: ...
     def set_sink(self, send_binary: Callable[[bytes], None] | None) -> None: ...
-    def play(self, stream, on_first_audio: Callable[[], None]) -> None: ...
+    def play(self, stream, on_first_audio: Callable[[], None]) -> float | None:
+        """Blocks until synthesis ends. BrowserAudio returns the seconds of audio sent to
+        the browser (which plays it later); ServerAudio returns None (already played)."""
     def cut(self) -> None:
         """Stop pressed: drop any audio the current play() still produces."""
 
@@ -60,20 +62,26 @@ class BrowserAudio:
         with self._lock:
             self._generation += 1
 
-    def play(self, stream, on_first_audio: Callable[[], None]) -> None:
+    def play(self, stream, on_first_audio: Callable[[], None]) -> float:
         first = _once(on_first_audio)
         with self._lock:
             generation = self._generation
+        sent = 0
 
         def on_chunk(chunk: bytes) -> None:
+            nonlocal sent
             with self._lock:
                 sink = self._sink if self._generation == generation else None
             if sink is None:
                 return
             first()
             sink(chunk)
+            sent += len(chunk)
 
         stream.play(on_audio_chunk=on_chunk, muted=True)
+        rate = self.output_format.get("sample_rate", 24000)
+        channels = self.output_format.get("channels", 1)
+        return sent / (2 * channels * rate)  # s16le
 
 
 class ServerAudio:
@@ -99,6 +107,7 @@ class ServerAudio:
     def play(self, stream, on_first_audio: Callable[[], None]) -> None:
         first = _once(on_first_audio)
         stream.play(on_audio_chunk=lambda _chunk: first())
+        return None  # play() returns after the speakers have played everything
 
 
 def make_audio_io(settings: Settings, stream, *, callbacks: dict | None = None,

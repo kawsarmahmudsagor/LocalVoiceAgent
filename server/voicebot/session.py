@@ -30,6 +30,7 @@ from voicebot.tts import drain_audio_queue, set_voice
 log = logging.getLogger(__name__)
 
 APOLOGY = "Sorry, something went wrong."
+PLAYBACK_MARGIN_S = 0.25  # browser playback slack after the estimated end of the audio
 _STRIP_PUNCT = str.maketrans("", "", string.punctuation)
 _LOG_SPANS = ("silence_wait_ms", "stt_ms", "llm_ttft_ms", "filter_ms", "tts_first_audio_ms",
               "playback_ms", "perceived_ms", "total_ms")
@@ -328,7 +329,9 @@ class VoiceSession:
                 set_voice(self.stream, voice)
             self._set_status("thinking")
             self.stream.feed(tokens())
-            self.audio.play(self.stream, on_first_audio)
+            audio_seconds = self.audio.play(self.stream, on_first_audio)
+            if not errors:
+                self._wait_for_browser_playback(audio_seconds, stop_event)
             self.timer.mark("play_done")
 
             if errors:
@@ -348,8 +351,6 @@ class VoiceSession:
             if reply:
                 self.conversation.add_exchange(text, reply)
             self._emit({"type": "assistant_done", "text": reply, "interrupted": interrupted})
-            if browser and self.timer.has("tts_first_audio") and not self.timer.has("playback_started"):
-                self._ack.wait(self.ack_timeout)
             self._finish_metrics(turn_id, source, interrupted, params, len(reply))
         except Exception as e:
             log.exception("turn %d failed", turn_id)
@@ -361,6 +362,21 @@ class VoiceSession:
             self.timer.reset()
             self.audio.mute_input(False)
             self._set_status("listening" if self._listening else "idle")
+
+    def _wait_for_browser_playback(self, audio_seconds: float | None, stop_event: threading.Event) -> None:
+        """Browser mode: Kokoro synthesizes faster than real time, so play() returns while the
+        browser still has audio queued. Keep the turn open (mic muted, status "speaking",
+        Stop enabled) until that audio has played; Stop ends the wait at once."""
+        if not audio_seconds or stop_event.is_set():
+            return
+        if not self.timer.has("playback_started"):
+            self._ack.wait(self.ack_timeout)
+        start = self.timer.get("playback_started") or self.timer.get("tts_first_audio")
+        if start is None:
+            return
+        remaining = start + audio_seconds + PLAYBACK_MARGIN_S - self.timer.now()
+        if remaining > 0:
+            stop_event.wait(remaining)
 
     def _finish_metrics(self, turn_id: int, source: str, interrupted: bool, params: GenerationParams,
                         reply_chars: int) -> None:
