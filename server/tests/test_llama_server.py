@@ -93,3 +93,24 @@ def test_sm120_hint(tmp_path):
     srv = LlamaServer(docker_settings(), run=lambda c, **k: None, which=lambda n: "x", log_path=log, home=tmp_path,
                       popen=FakePopen(exit_code=1, writes="CUDA error: no kernel image is available"), status=lambda u, **k: None)
     with pytest.raises(LlamaServerError, match="build_llama_image.sh"): srv.start()
+
+def test_missing_image_pulled_before_health_timeout(tmp_path):            # e2e: pull counted against the timeout
+    from types import SimpleNamespace as NS
+    calls = []
+    def fake_run(c, **k):
+        calls.append(c)
+        return NS(returncode=1 if c[:3] == ["docker", "image", "inspect"] else 0)
+    clock = Clock()
+    srv = LlamaServer(docker_settings(LLAMA_START_TIMEOUT="5"), run=fake_run, which=lambda n: "x", popen=FakePopen(),
+                      status=lambda u, **k: 200, sleep=clock.sleep, clock=clock, log_path=tmp_path / "l.log", home=tmp_path)
+    srv.start()
+    assert ["docker", "pull", "ghcr.io/ggml-org/llama.cpp:server-cuda"] in calls
+    assert calls.index(["docker", "pull", "ghcr.io/ggml-org/llama.cpp:server-cuda"]) < len(calls)
+    srv.close()
+
+def test_failed_pull_raises(tmp_path):
+    from types import SimpleNamespace as NS
+    fake_run = lambda c, **k: NS(returncode=1)
+    srv = LlamaServer(docker_settings(), run=fake_run, which=lambda n: "x", popen=FakePopen(), status=lambda u, **k: 200,
+                      log_path=tmp_path / "l.log", home=tmp_path)
+    with pytest.raises(LlamaServerError, match="docker pull"): srv.start()

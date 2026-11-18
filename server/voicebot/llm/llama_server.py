@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import atexit
+import logging
 import shutil
 import socket
 import subprocess
@@ -14,6 +15,7 @@ from typing import Callable
 from voicebot.config import REPO_ROOT, Settings
 from voicebot.llm.base import LLMError
 
+log = logging.getLogger(__name__)
 LOG_TAIL_LINES = 30
 CONTAINER = "voicebot-llama"
 SM120_HINT = "no kernel image is available"
@@ -93,6 +95,7 @@ class LlamaServer:
                 raise LlamaServerError("docker not found on PATH: install Docker with the NVIDIA Container Toolkit, "
                                        "or set LLAMA_RUNTIME=binary")
             self._run(["docker", "rm", "-f", CONTAINER], capture_output=True)
+            self._ensure_image()
         elif not Path(s.llama_server_path).is_file():
             raise LlamaServerError(f"llama-server not found at {s.llama_server_path}: run scripts/fetch_llama_server.ps1")
         if self._port_check(s.llama_host, s.llama_port):
@@ -115,6 +118,18 @@ class LlamaServer:
                 hint = ("\nThe image has no sm_120 kernels: run scripts/build_llama_image.sh "
                         "and set LLAMA_IMAGE=voicebot/llama-server:cuda12.8")
             raise LlamaServerError(f"{e}{hint}\n--- last {LOG_TAIL_LINES} log lines ---\n{tail}") from None
+
+    def _ensure_image(self) -> None:
+        """Pull a missing image first, so the download does not count against LLAMA_START_TIMEOUT."""
+        image = self.settings.llama_image
+        inspect = self._run(["docker", "image", "inspect", image], capture_output=True)
+        if getattr(inspect, "returncode", 0) == 0:
+            return
+        log.info("pulling %s (first run; this can take several minutes)", image)
+        pulled = self._run(["docker", "pull", image], capture_output=True, text=True)
+        if getattr(pulled, "returncode", 0) != 0:
+            detail = (getattr(pulled, "stderr", "") or getattr(pulled, "stdout", "") or "").strip().splitlines()[-3:]
+            raise LlamaServerError(f"docker pull {image} failed: {' | '.join(detail) or 'no output'}")
 
     def _log_tail(self) -> str:
         try:
