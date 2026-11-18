@@ -661,7 +661,7 @@ No new code, unless a step fails and needs a fix in Tasks 5–9 (with a test).
   - `scripts/bench_install.sh <family>`, then `scripts/bench_fetch.sh <slug>` for each of its slugs.
   - For `manual:` entries, follow the printed doc.
   - After `kokoro`, run `venvs/bench-kokoro/bin/python -m voicebot.bench.ref_voice`.
-  - Check `df -h ~` after each family. Stop and report if the total v2 usage passes 40 GB.
+  - Check `df -h ~` after each family. Stop and report if the total v2 usage passes 50 GB (budget raised from 35 GB on 2026-11-18).
 - [ ] **Step 3: Measure** with the llama-server container running (`scripts/dev.sh` in another terminal):
   - Every final STT slug: `run_stt --slug`.
   - Every realtime slug: `run_stt --slug --realtime`.

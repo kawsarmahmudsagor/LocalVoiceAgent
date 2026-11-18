@@ -20,7 +20,7 @@ Model slugs show the role of each STT model. Realtime slugs end in `-rt`.
 3. The shortlist follows the rule in §4.3, and the choice is recorded in the matrix.
 4. In Phase B, final STT, realtime STT and TTS can be switched from the UI while idle, with no restart. A failed switch leaves the previous model running.
 5. Every turn's `logs/turns.jsonl` record includes the active slugs, so `latency_report --by stt_final,tts_model` compares them directly.
-6. Total disk used by v2 (venvs, model weights, Docker images, LLM) stays at about 35 GB.
+6. Total disk used by v2 (venvs, model weights, Docker images, LLM) stays under 50 GB (raised from about 35 GB on 2026-11-18).
 7. Unit tests pass without a GPU or downloaded models.
 
 ### Out of scope
@@ -133,7 +133,7 @@ Every entry must install against the shared `torch==2.7.1+cu128`. An entry whose
 | Final STT | `qwen3-asr-1-7b` | `qwen3_asr` | `Qwen/Qwen3-ASR-1.7B` | cuda | ≈ 4.5 GB | **user request (2026-11-18)**; always on the shortlist via `bench/overrides.toml` |
 | TTS | `coqui-xtts-v2` | `CoquiEngine` | XTTS v2 (v2.0.2), cloning `assets/ref_voice.wav` | cuda | ≈ 2 GB | **user request (2026-11-18)**; always on the shortlist via `bench/overrides.toml` |
 
-Both user-requested entries resolve with `torch==2.7.1+cu128` (`uv pip compile`, 2026-11-18: `qwen-asr 0.0.6` with `transformers 4.57.6`; `coqui-tts 0.28.0`). They add about 7 GB to the §3.2 budget.
+Both user-requested entries resolve with `torch==2.7.1+cu128` (`uv pip compile`, 2026-11-18: `qwen-asr 0.0.6` with `transformers 4.57.6`; `coqui-tts 0.28.0`). They add about 7 GB; the user raised the v2 disk budget to 50 GB for them.
 
 **Reference voice.** `qwen-cuda` and `chatterbox` clone a voice. The bench installer generates `assets/ref_voice.wav` once with Kokoro (`af_heart`), from the sentence in `assets/ref_voice.txt`, so the reference text matches the audio exactly.
 
