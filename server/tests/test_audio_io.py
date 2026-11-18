@@ -20,11 +20,16 @@ def test_make_recorder_kwargs():
     r = stt.make_recorder(Settings.load(env={}), use_microphone=False, recorder_cls=Rec)
     assert r.kw == dict(model="small.en", language="en", device="cuda", compute_type="int8", use_microphone=False,
                         post_speech_silence_duration=0.6, spinner=False, enable_realtime_transcription=False)
+    cb = {"on_recording_stop": lambda: None}
+    assert stt.make_recorder(Settings.load(env={}), use_microphone=False, callbacks=cb, recorder_cls=Rec).kw["on_recording_stop"] is cb["on_recording_stop"]
 
-def test_make_recorder_passes_recording_stop_callback():     # per-stage timing: silence end
-    cb = lambda: None
-    r = stt.make_recorder(Settings.load(env={}), use_microphone=True, recorder_cls=Rec, on_recording_stop=cb)
-    assert r.kw["on_recording_stop"] is cb
+def test_timing_callbacks_mark_stages():                                  # Review Focus 6
+    from voicebot.timing import TurnTimer
+    tm = TurnTimer(); cb = stt.timing_callbacks(tm)
+    cb["on_turn_detection_start"](); cb["on_turn_detection_stop"](); assert not tm.has("speech_end")
+    cb["on_turn_detection_start"](); cb["on_recording_stop"]()
+    assert cb["on_transcription_start"](b"audio") is None                  # truthy would abort transcription
+    assert all(tm.has(s) for s in ("speech_end", "endpoint", "stt_start"))
 
 def test_tts_helpers():
     s = Stream()
@@ -47,7 +52,7 @@ def test_server_audio():
 
 def test_make_audio_io_selects_mode():
     calls = []
-    f = lambda settings, use_microphone: calls.append(use_microphone) or Rec()
+    f = lambda settings, use_microphone, callbacks=None: calls.append(use_microphone) or Rec()
     assert isinstance(make_audio_io(Settings.load(env={"AUDIO_IO": "browser"}), Stream(), recorder_factory=f), BrowserAudio)
     assert isinstance(make_audio_io(Settings.load(env={"AUDIO_IO": "server"}), Stream(), recorder_factory=f), ServerAudio)
     assert calls == [False, True]

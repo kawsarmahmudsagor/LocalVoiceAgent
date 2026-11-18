@@ -88,11 +88,10 @@ class ServerAudio:
         stream.play(on_audio_chunk=lambda _chunk: first())
 
 
-def make_audio_io(settings: Settings, stream, *, recorder_factory=make_recorder,
-                  on_recording_stop: Callable[[], None] | None = None) -> AudioIO:
+def make_audio_io(settings: Settings, stream, *, callbacks: dict | None = None,
+                  recorder_factory=make_recorder) -> AudioIO:
     browser = settings.audio_io == "browser"
-    extra = {"on_recording_stop": on_recording_stop} if on_recording_stop is not None else {}
-    recorder = recorder_factory(settings, use_microphone=not browser, **extra)
+    recorder = recorder_factory(settings, use_microphone=not browser, callbacks=callbacks)
     if browser:
         return BrowserAudio(recorder, tts_output_format(stream))
     return ServerAudio(recorder)
