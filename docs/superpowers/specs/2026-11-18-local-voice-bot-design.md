@@ -296,6 +296,7 @@ Every JSON frame has a `type` field. `web/src/protocol.ts` mirrors these types.
 | `send_text` | `text` |
 | `update_settings` | `system_prompt?`, `temperature?`, `top_p?`, `max_tokens?`, `voice?` |
 | `clear` | — |
+| `playback_started` | `turn_id` (browser mode: the player has started outputting this turn's audio) |
 | *(binary)* | mic audio: PCM s16le, mono, 16 kHz, about 20–100 ms per frame |
 
 **Server → client**
@@ -304,10 +305,10 @@ Every JSON frame has a `type` field. `web/src/protocol.ts` mirrors these types.
 |---|---|
 | `config` | same as `/api/config` |
 | `status` | `state`: `idle` / `listening` / `thinking` / `speaking` |
-| `user_transcript` | `text` |
+| `user_transcript` | `text`, `turn_id` |
 | `assistant_delta` | `text` |
 | `assistant_done` | `text`, `interrupted` |
-| `metrics` | `ttft_ms`, `first_audio_ms`, `total_ms` |
+| `metrics` | `turn_id`, `source` (`voice` / `text`), `interrupted`, `marks` (ms per stage since the turn's start: end of speech, or typed input), `spans` (per-stage durations, including `perceived_ms`). Stages and spans are defined in plan Task 7b. Each turn is also appended to `logs/turns.jsonl`. |
 | `error` | `code`, `message` |
 | *(binary)* | TTS audio in `output_format` (browser mode only) |
 

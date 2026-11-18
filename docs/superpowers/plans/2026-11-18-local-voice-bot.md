@@ -44,6 +44,10 @@ These are inputs the spec implies but doesn't spell out. Each one has a test in 
 3. **Browser disconnects mid-turn** → the server stops listening, detaches the session, and later events are dropped without raising. Tasks 9 and 10.
 4. **llama-server dies after startup** → the next turn raises `LLMError` mentioning llama-server, the user hears the apology, and the session keeps working. Task 5 (backend) and Task 9 (apology).
 5. **Empty or whitespace `send_text`** → ignored, no turn starts. Task 9.
+6. **Stage timing edge cases:**
+   - The user pauses and then keeps talking: `speech_end` is cleared and marked again, so the silence wait is measured from the real end of speech. Tasks 7b and 8.
+   - A `playback_started` ack that arrives late or names an old turn is ignored.
+   - A missing stage gives `null` spans, not an error. Tasks 7b and 9.
 
 ---
 
@@ -67,6 +71,7 @@ server/voicebot/llm/llamacpp_backend.py      Task 5
 server/voicebot/llm/transformers_backend.py  Task 6
 server/voicebot/llm/factory.py       Task 6
 server/voicebot/smoke_llm.py         Task 7
+server/voicebot/timing.py  latency_report.py  Task 7b
 server/voicebot/stt.py  tts.py  audio_io.py   Task 8
 server/voicebot/session.py           Task 9
 server/voicebot/web.py               Task 10
@@ -666,6 +671,139 @@ git commit -m "feat(server): add LLM smoke check and llama.cpp fetch script; pin
 
 ---
 
+### Task 7b: `timing.py` and `latency_report.py` — stage timing
+
+Every turn records a timestamp at each pipeline stage. The `metrics` event, the UI and `logs/turns.jsonl` all report per-stage durations, so you can see where the latency goes.
+
+**Stages**, in pipeline order:
+
+| Stage | Marked when | Marked by |
+|---|---|---|
+| `speech_end` | The VAD first hears silence after speech (RealtimeSTT `on_turn_detection_start`). Cleared if speech resumes (`on_turn_detection_stop`). | recorder callback (Task 8) |
+| `endpoint` | The silence wait (`STT_SILENCE_SEC`) is over and recording stops (`on_recording_stop`) | recorder callback |
+| `stt_start` | Final transcription starts (`on_transcription_start`) | recorder callback |
+| `stt_done` | `recorder.text()` returns | session (Task 9) |
+| `input` | A typed `send_text` is received (typed turns only) | session |
+| `llm_first_token` | The backend yields its first raw chunk | session |
+| `first_text` | `filter_stream` yields its first speakable chunk | session |
+| `tts_first_audio` | The first TTS audio chunk is produced | session (`on_first_audio`) |
+| `playback_started` | Browser mode: the browser's player starts outputting audio and acks. Server mode: same moment as `tts_first_audio`. | session |
+| `llm_done` | The backend stream ends | session |
+| `play_done` | `audio.play()` returns | session |
+
+Note: `on_vad_stop` is **not** used. RealtimeSTT fires it after the silence wait, not when speech ends (`RealtimeSTT/RealtimeSTT/core/recording.py:474-479`). `speech_end` itself lags the true end of speech by the VAD's detection delay, which is a few tens of ms.
+
+**Spans** (ms; `null` when either end is missing). The origin is the first present stage of `speech_end`, `endpoint`, `stt_done` or `input`. "Input" below means `stt_done` for voice turns and `input` for typed turns.
+
+| Span | Formula | What it shows |
+|---|---|---|
+| `silence_wait_ms` | `endpoint − speech_end` | the end-of-turn wait (≈ `STT_SILENCE_SEC`) |
+| `stt_ms` | `stt_done − endpoint` | final transcription |
+| `llm_ttft_ms` | `llm_first_token − input` | LLM time to first token |
+| `filter_ms` | `first_text − llm_first_token` | text dropped by the filter (`<think>`, markdown) |
+| `tts_first_audio_ms` | `tts_first_audio − first_text` | TTS time to first audio |
+| `playback_ms` | `playback_started − tts_first_audio` | WebSocket + browser player buffering |
+| `perceived_ms` | `(playback_started, or else tts_first_audio) − origin` | **what the user feels**: end of speech to first sound |
+| `llm_total_ms` | `llm_done − input` | full generation time |
+| `total_ms` | `play_done − origin` | whole turn |
+
+**Files:**
+- Create: `server/voicebot/timing.py`, `server/voicebot/latency_report.py`
+- Test: `server/tests/test_timing.py`, `server/tests/test_latency_report.py`
+
+**Interfaces:**
+- Produces:
+  - **`timing.py`** (stdlib only):
+    - `STAGES: tuple[str, ...]`, the 11 stages above, in order
+    - `SPANS: tuple[str, ...]`, the 9 spans above, in order
+    - `class TurnTimer(clock: Callable[[], float] = time.perf_counter)`. All methods are thread-safe behind one lock.
+      - `mark(stage)`: records `clock()` only if the stage is not already set, so the first mark wins. An unknown stage raises `ValueError`.
+      - `unmark(stage)`, `get(stage) -> float | None`, `has(stage) -> bool`, `reset()`.
+      - `report() -> {"marks": {stage: int | None}, "spans": {span: int | None}}`. Marks are ms since the origin. Every value is `round(seconds * 1000)`. With no origin, everything is `None`.
+    - `append_jsonl(path: Path, record: dict) -> None`: creates the parent dirs and appends one compact JSON line. An `OSError` is logged and swallowed, so a turn never fails because of logging.
+  - **`latency_report.py`**: `python -m voicebot.latency_report [path] [--by k1,k2] [--last N] [--source voice|text|all]`
+    - Default `path`: `REPO_ROOT/logs/turns.jsonl`. Default `--by`: `llm_backend,audio_io,stt_model`. Default `--source`: `all`.
+    - `summarize(records, group_by: tuple[str, ...]) -> list[dict]`:
+      - Skips records with `interrupted: true`.
+      - Groups by the `group_by` fields.
+      - Each row is `{"group": {...}, "n": int, "spans": {span: {"median": int, "p90": int} | None}}`.
+      - Medians use `round(statistics.median(...))`. p90 uses nearest rank: `sorted(v)[ceil(0.9 * len(v)) - 1]`. `None` values are excluded. A span with no values is `None`.
+    - `main(argv: list[str] | None = None)`: applies `--source` and `--last`, then prints one plain-text table per group: the group values, `n`, and one line per span with its median and p90.
+
+- [ ] **Step 1: Write the failing tests**
+
+```python
+# test_timing.py
+import json, pytest
+from voicebot.timing import TurnTimer, append_jsonl
+
+class Clock:
+    def __init__(self): self.t = 0.0
+    def __call__(self): return self.t
+
+def at(tm, c, stage, t): c.t = t; tm.mark(stage)
+
+def test_voice_turn_spans():
+    c = Clock(); tm = TurnTimer(clock=c)
+    for st, t in [("speech_end", 100.0), ("endpoint", 100.6), ("stt_start", 100.61), ("stt_done", 100.8),
+                  ("llm_first_token", 101.1), ("first_text", 101.12), ("tts_first_audio", 101.3),
+                  ("playback_started", 101.34), ("llm_done", 101.9), ("play_done", 104.0)]:
+        at(tm, c, st, t)
+    r = tm.report()
+    assert r["marks"]["speech_end"] == 0 and r["marks"]["endpoint"] == 600 and r["marks"]["input"] is None
+    assert r["spans"] == {"silence_wait_ms": 600, "stt_ms": 200, "llm_ttft_ms": 300, "filter_ms": 20,
+                          "tts_first_audio_ms": 180, "playback_ms": 40, "perceived_ms": 1340,
+                          "llm_total_ms": 1100, "total_ms": 4000}
+
+def test_typed_turn_uses_input_origin_and_null_spans():
+    c = Clock(); tm = TurnTimer(clock=c)
+    for st, t in [("input", 50.0), ("llm_first_token", 50.25), ("first_text", 50.25), ("tts_first_audio", 50.5), ("play_done", 52.0)]:
+        at(tm, c, st, t)
+    s = tm.report()["spans"]
+    assert s["llm_ttft_ms"] == 250 and s["silence_wait_ms"] is None and s["stt_ms"] is None
+    assert s["playback_ms"] is None and s["perceived_ms"] == 500        # falls back to tts_first_audio
+
+def test_first_mark_wins_unmark_and_reset():                            # Review Focus 6
+    c = Clock(); tm = TurnTimer(clock=c)
+    at(tm, c, "speech_end", 1.0); at(tm, c, "speech_end", 2.0); assert tm.get("speech_end") == 1.0
+    tm.unmark("speech_end"); at(tm, c, "speech_end", 3.0); assert tm.get("speech_end") == 3.0
+    tm.reset(); assert not tm.has("speech_end") and tm.report()["spans"]["total_ms"] is None
+
+def test_unknown_stage_raises():
+    with pytest.raises(ValueError): TurnTimer().mark("nope")
+
+def test_append_jsonl(tmp_path):
+    p = tmp_path / "logs" / "t.jsonl"; append_jsonl(p, {"a": 1}); append_jsonl(p, {"a": 2})
+    assert [json.loads(l) for l in p.read_text().splitlines()] == [{"a": 1}, {"a": 2}]
+```
+
+```python
+# test_latency_report.py
+import json
+from voicebot.latency_report import summarize, main
+
+def rec(backend, perceived, total, interrupted=False, source="voice"):
+    return {"llm_backend": backend, "audio_io": "browser", "stt_model": "small.en", "source": source,
+            "interrupted": interrupted, "spans": {"perceived_ms": perceived, "total_ms": total, "stt_ms": None}}
+
+def test_summarize_groups_and_skips():
+    rows = summarize([rec("llamacpp", 1000, 3000), rec("llamacpp", 1200, 3100), rec("llamacpp", 1400, 3200),
+                      rec("llamacpp", 9999, 1, interrupted=True), rec("transformers", 2000, 5000)], group_by=("llm_backend",))
+    g = {r["group"]["llm_backend"]: r for r in rows}
+    assert g["llamacpp"]["n"] == 3 and g["llamacpp"]["spans"]["perceived_ms"] == {"median": 1200, "p90": 1400}
+    assert g["llamacpp"]["spans"]["stt_ms"] is None and g["transformers"]["n"] == 1
+
+def test_main_prints_table(tmp_path, capsys):
+    p = tmp_path / "t.jsonl"; p.write_text("".join(json.dumps(rec("llamacpp", 1000, 3000)) + "\n" for _ in range(2)))
+    main([str(p), "--by", "llm_backend"]); out = capsys.readouterr().out
+    assert "llamacpp" in out and "perceived_ms" in out and "1000" in out
+```
+
+- [ ] **Step 2: Run them to see them fail. Step 3: Implement. Step 4: Run them to see them pass** (7 passed).
+- [ ] **Step 5: Commit** with the message `feat(server): add per-turn stage timer and latency report`.
+
+---
+
 ### Task 8: `stt.py`, `tts.py`, `audio_io.py`
 
 **Files:**
@@ -673,11 +811,17 @@ git commit -m "feat(server): add LLM smoke check and llama.cpp fetch script; pin
 - Test: `server/tests/test_audio_io.py`
 
 **Interfaces:**
-- Consumes: `Settings`.
+- Consumes: `Settings`; `TurnTimer` (Task 7b).
 - Produces:
-  - **`stt.py`**: `make_recorder(settings, *, use_microphone: bool, recorder_cls=None) -> AudioToTextRecorder`.
-    - Imports `RealtimeSTT` lazily when `recorder_cls` is None.
-    - Passes exactly: `model=stt_model, language="en", device=stt_device, compute_type=stt_compute_type, use_microphone=use_microphone, post_speech_silence_duration=stt_silence_sec, spinner=False, enable_realtime_transcription=False`.
+  - **`stt.py`**:
+    - `make_recorder(settings, *, use_microphone: bool, callbacks: dict | None = None, recorder_cls=None) -> AudioToTextRecorder`.
+      - Imports `RealtimeSTT` lazily when `recorder_cls` is None.
+      - Passes exactly: `model=stt_model, language="en", device=stt_device, compute_type=stt_compute_type, use_microphone=use_microphone, post_speech_silence_duration=stt_silence_sec, spinner=False, enable_realtime_transcription=False`, plus every entry of `callbacks`.
+    - `timing_callbacks(timer) -> dict` returns:
+      - `on_turn_detection_start` → `timer.mark("speech_end")`
+      - `on_turn_detection_stop` → `timer.unmark("speech_end")` (the user resumed speaking)
+      - `on_recording_stop` → `timer.mark("endpoint")`
+      - `on_transcription_start(audio)` → `timer.mark("stt_start")`. It **must return `None`**, because RealtimeSTT aborts the transcription when this callback returns a truthy value (`core/transcription_api.py:53-54`).
   - **`tts.py`**:
     - `make_tts(settings, *, engine_cls=None, stream_cls=None) -> TextToAudioStream` (`KokoroEngine(voice=tts_voice)`)
     - `warm_up(stream) -> None`: `stream.feed("Warming up."); stream.play(muted=True)`
@@ -688,7 +832,7 @@ git commit -m "feat(server): add LLM smoke check and llama.cpp fetch script; pin
     - `class AudioIO(Protocol)` with `recorder`, `output_format: dict | None`, `on_client_audio(data: bytes)`, `mute_input(muted: bool)`, `set_sink(send_binary: Callable[[bytes], None] | None)`, `play(stream, on_first_audio: Callable[[], None]) -> None`
     - `class BrowserAudio(recorder, output_format: dict)`
     - `class ServerAudio(recorder)`
-    - `make_audio_io(settings, stream, *, recorder_factory=make_recorder) -> AudioIO`
+    - `make_audio_io(settings, stream, *, callbacks: dict | None = None, recorder_factory=make_recorder) -> AudioIO`. It calls `recorder_factory(settings, use_microphone=..., callbacks=callbacks)`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -715,6 +859,16 @@ def test_make_recorder_kwargs():
     r = stt.make_recorder(Settings.load(env={}), use_microphone=False, recorder_cls=Rec)
     assert r.kw == dict(model="small.en", language="en", device="cuda", compute_type="int8", use_microphone=False,
                         post_speech_silence_duration=0.6, spinner=False, enable_realtime_transcription=False)
+    cb = {"on_recording_stop": lambda: None}
+    assert stt.make_recorder(Settings.load(env={}), use_microphone=False, callbacks=cb, recorder_cls=Rec).kw["on_recording_stop"] is cb["on_recording_stop"]
+
+def test_timing_callbacks_mark_stages():                                  # Review Focus 6
+    from voicebot.timing import TurnTimer
+    tm = TurnTimer(); cb = stt.timing_callbacks(tm)
+    cb["on_turn_detection_start"](); cb["on_turn_detection_stop"](); assert not tm.has("speech_end")
+    cb["on_turn_detection_start"](); cb["on_recording_stop"]()
+    assert cb["on_transcription_start"](b"audio") is None                  # truthy would abort transcription
+    assert all(tm.has(s) for s in ("speech_end", "endpoint", "stt_start"))
 
 def test_tts_helpers():
     s = Stream()
@@ -737,13 +891,13 @@ def test_server_audio():
 
 def test_make_audio_io_selects_mode():
     calls = []
-    f = lambda settings, use_microphone: calls.append(use_microphone) or Rec()
+    f = lambda settings, use_microphone, callbacks=None: calls.append(use_microphone) or Rec()
     assert isinstance(make_audio_io(Settings.load(env={"AUDIO_IO": "browser"}), Stream(), recorder_factory=f), BrowserAudio)
     assert isinstance(make_audio_io(Settings.load(env={"AUDIO_IO": "server"}), Stream(), recorder_factory=f), ServerAudio)
     assert calls == [False, True]
 ```
 
-- [ ] **Step 2: Run it to see it fail. Step 3: Implement. Step 4: Run it to see it pass** (5 passed).
+- [ ] **Step 2: Run it to see it fail. Step 3: Implement. Step 4: Run it to see it pass** (6 passed).
 
 - [ ] **Step 5: Manual hardware check**, from `server/`:
   `.venv/Scripts/python -c "from voicebot.config import Settings; from voicebot import tts; s=tts.make_tts(Settings.load()); tts.warm_up(s); s.feed('Kokoro is working.'); s.play()"`
@@ -761,18 +915,33 @@ def test_make_audio_io_selects_mode():
 - Test: `server/tests/test_session.py`
 
 **Interfaces:**
-- Consumes: `LLMBackend`, `GenerationParams`, `LLMError` (Task 4); `filter_stream` (Task 2); `Conversation` (Task 3); `AudioIO` (Task 8); `set_voice` (Task 8).
+- Consumes: `LLMBackend`, `GenerationParams`, `LLMError` (Task 4); `filter_stream` (Task 2); `Conversation` (Task 3); `TurnTimer` (Task 7b); `AudioIO` (Task 8); `set_voice` (Task 8).
 - Produces:
   - `is_noise(text: str) -> bool`: true for empty or whitespace text, fewer than 2 letters, or text that becomes `"you"` after lowercasing and stripping punctuation.
   - `APOLOGY = "Sorry, something went wrong."`
-  - `class VoiceSession(*, backend, audio, stream, conversation, params: GenerationParams, voice: str, voices: list[str], info: dict)`. `info` holds `llm_backend`, `audio_io` and `model_label`.
+  - `class VoiceSession(*, backend, audio, stream, conversation, params: GenerationParams, voice: str, voices: list[str], info: dict, timer: TurnTimer | None = None, metrics_sink: Callable[[dict], None] | None = None)`.
+    - `info` holds `llm_backend`, `audio_io` and `model_label`, plus `stt_model`, `stt_device`, `stt_compute_type` and `stt_silence_sec` for the metrics log.
+    - `timer` defaults to a new `TurnTimer()`. The real wiring passes the same timer whose callbacks went into the recorder (Task 10).
     - `attach(emit: Callable[[dict], None], send_binary: Callable[[bytes], None]) -> None`: calls `audio.set_sink(send_binary)`.
     - `detach() -> None`: emit becomes a no-op, and calls `audio.set_sink(None)`.
     - `handle(command: dict) -> None`: dispatches on `command["type"]` per spec §4.7. An unknown type emits `error{code:"bad_command"}`.
     - `on_client_audio(data: bytes) -> None`: delegates to `audio`.
     - `config() -> dict`: `{**info, "voices": ..., "output_format": audio.output_format, "defaults": {"system_prompt", "temperature", "top_p", "max_tokens", "voice"}}`, using the current values.
     - `close() -> None`: stops listening, stops speaking, joins threads.
-  - **Event dicts emitted** (spec §4.9): `status`, `user_transcript`, `assistant_delta`, `assistant_done`, `metrics` (`ttft_ms` / `first_audio_ms` are `int | None`, `total_ms` is `int`), `error` (codes `busy`, `bad_settings`, `bad_command`, `llm_error`).
+  - **Event dicts emitted** (spec §4.9): `status`, `user_transcript` (`text`, `turn_id`), `assistant_delta`, `assistant_done`, `metrics`, `error` (codes `busy`, `bad_settings`, `bad_command`, `llm_error`).
+    - `metrics` = `{"type": "metrics", "turn_id": int, "source": "voice" | "text", "interrupted": bool, **timer.report()}`, which adds `marks` and `spans` (Task 7b).
+    - `turn_id` counts up from 1 for each turn the session runs.
+  - **Stage marks** (Task 7b table):
+    - `stt_done` when `recorder.text()` returns; `input` on `send_text`.
+    - `llm_first_token` on the first raw backend chunk (wrap `backend.stream(...)` before `filter_stream`), `first_text` on the first filtered chunk, `llm_done` when the backend iterator ends.
+    - `tts_first_audio` in `on_first_audio`. In server mode (`audio.output_format is None`), also `playback_started` at the same moment.
+    - `play_done` after `audio.play` returns.
+  - **`playback_started` command** `{type, turn_id}` (browser mode): marks `playback_started` only if `turn_id` is the running turn's id. Otherwise it is ignored with no event. After `play` returns in browser mode, the turn waits up to 1.0 s for this ack before emitting `metrics`.
+  - **Timer lifecycle:**
+    - A typed turn calls `timer.reset()` and then marks `input`.
+    - A voice turn keeps the marks the recorder callbacks made while listening.
+    - Every turn calls `timer.reset()` in `finally`, after `metrics` is emitted. A skipped noise transcript also resets the timer.
+  - **Metrics log:** after emitting `metrics`, call `metrics_sink(record)` if it is set. `record` is the metrics dict without `type`, plus `ts` (ISO 8601 UTC), the `info` fields, the current `voice`, `temperature`, `top_p`, `max_tokens` and `reply_chars`. Sink exceptions are logged and swallowed.
   - **Event order for one turn:** `user_transcript`, `status thinking`, `assistant_delta`×N, `status speaking` (at first audio), `assistant_done`, `metrics`, then `status listening` if the listen loop is active, else `status idle`.
   - **`update_settings` validation:** `temperature` must be a number in [0, 2], `top_p` a number in [0, 1], `max_tokens` an int in [32, 1024], `voice` must be in `voices`, and `system_prompt` must be a str. If anything is invalid, emit `bad_settings` and apply nothing.
 
@@ -792,7 +961,19 @@ def test_typed_turn_event_order_and_history(session, events, conv):
     done = next(e for e in events if e["type"] == "assistant_done")
     assert done == {"type": "assistant_done", "text": "Hello there.", "interrupted": False}
     assert conv.turns == [("Hi", "Hello there.")]
-    m = next(e for e in events if e["type"] == "metrics"); assert m["total_ms"] >= 0 and m["ttft_ms"] is not None
+    m = next(e for e in events if e["type"] == "metrics")
+    assert m["source"] == "text" and m["turn_id"] == events[0]["turn_id"] == 1 and m["interrupted"] is False
+    assert m["spans"]["total_ms"] >= 0 and m["spans"]["llm_ttft_ms"] is not None and m["spans"]["stt_ms"] is None
+
+def test_voice_turn_metrics_and_sink(session_with_texts, sink, events):     # sink fixture: list.append
+    session_with_texts.handle({"type": "start_listening"}); wait_for(lambda: sink)
+    assert sink[0]["source"] == "voice" and sink[0]["marks"]["stt_done"] is not None
+    assert sink[0]["stt_model"] == "small.en" and "ts" in sink[0] and "type" not in sink[0]
+
+def test_playback_ack_only_for_current_turn(gated_session, events, timer):   # Review Focus 6
+    gated_session.handle({"type": "send_text", "text": "x"}); wait_for(lambda: "user_transcript" in types(events))
+    gated_session.handle({"type": "playback_started", "turn_id": 99}); assert not timer.has("playback_started")
+    gated_session.handle({"type": "playback_started", "turn_id": events[0]["turn_id"]}); assert timer.has("playback_started")
 
 def test_mute_before_play_unmute_after(session, audio):
     session.handle({"type": "send_text", "text": "Hi"}); wait_for(lambda: "mute:False" in audio.log)
@@ -849,12 +1030,18 @@ def test_unknown_command_and_clear(session, events, conv):
 ```
 
   Fixtures: `session` (the backend yields `["Hello", " there."]`), `session_with_texts`, `gated_session` (the backend waits on `gate` after its first chunk), `failing_session` (the backend raises `LLMError("down")`). `events` is a list filled by the attached `emit`. `stream.engine.voice` is set by the fake `set_voice`. The default params are `GenerationParams(0.7, 0.8, 256)`.
+  - Every session fixture gets a real `TurnTimer` (exposed as the `timer` fixture), `metrics_sink=sink.append` (the `sink` fixture, a list), and an `info` with the Task 1 default STT values.
+  - `FakeAudio.output_format` is `{"sample_rate": 24000}` (browser mode). To keep the tests fast, the session's playback-ack wait is a constructor argument `ack_timeout: float = 1.0`, set to `0.05` in the fixtures.
 
 - [ ] **Step 2: Run it to see it fail.**
 
 - [ ] **Step 3: Implement**, following spec §4.7 and the Interfaces above. Approach:
   - `_turn_lock = threading.Lock()`. `send_text` runs `_run_turn` on a daemon thread. If `_turn_lock.acquire(blocking=False)` fails, emit `busy`. The listen loop acquires it blocking.
-  - In `_run_turn`, the backend iterator is `filter_stream(backend.stream(conversation.messages(text), params, stop_event))`, wrapped in a generator that emits `assistant_delta` and records the first-token time. `stream.feed(...)`, then `audio.play(stream, on_first_audio)`. `on_first_audio` emits `status speaking` and records the first-audio time.
+  - In `_run_turn`, the backend iterator is `filter_stream(marked(backend.stream(conversation.messages(text), params, stop_event)))`, wrapped in a generator that emits `assistant_delta` and marks `first_text`.
+    - `marked` is a generator that marks `llm_first_token` on the first chunk and `llm_done` when the iterator ends.
+    - Then `stream.feed(...)` and `audio.play(stream, on_first_audio)`.
+    - `on_first_audio` emits `status speaking` and marks `tts_first_audio` (and `playback_started` in server mode).
+  - The playback ack uses a `threading.Event`. The `playback_started` handler sets it, and the turn waits on it with `ack_timeout`.
   - `stop_speaking` sets the current `stop_event` (if a turn is running) and calls `stream.stop()`.
   - On `LLMError`:
     1. Emit `error{code:"llm_error", message:str(e)}`.
@@ -864,7 +1051,7 @@ def test_unknown_command_and_clear(session, events, conv):
   - `audio.mute_input(False)` goes in `finally`.
   - `emit` and the voice changes are guarded by a lock.
 
-- [ ] **Step 4: Run it to see it pass.** Expected: all pass, 17 tests including the parametrized ones. Run it 3 times to check for flakiness.
+- [ ] **Step 4: Run it to see it pass.** Expected: all pass, 19 tests including the parametrized ones. Run it 3 times to check for flakiness.
 
 - [ ] **Step 5: Commit** with the message `feat(server): add VoiceSession turn loop with events and settings`.
 
@@ -877,14 +1064,18 @@ def test_unknown_command_and_clear(session, events, conv):
 - Test: `server/tests/test_web.py`
 
 **Interfaces:**
-- Consumes: `Settings`, `make_backend`, `make_tts`, `warm_up`, `list_voices`, `make_audio_io`, `Conversation`, `GenerationParams`, `VoiceSession`.
+- Consumes: `Settings`, `make_backend`, `make_tts`, `warm_up`, `list_voices`, `make_audio_io`, `timing_callbacks`, `TurnTimer`, `append_jsonl`, `Conversation`, `GenerationParams`, `VoiceSession`.
 - Produces:
   - `create_app(settings: Settings | None = None, *, session_factory: Callable[[Settings], Any] | None = None) -> FastAPI`. The session is created in `lifespan` startup and `close()`d at shutdown.
   - `build_session(settings) -> VoiceSession`, the real wiring:
     1. `backend = make_backend(s); backend.start()`
     2. `stream = make_tts(s); warm_up(stream)`
-    3. `audio = make_audio_io(s, stream)`
-    4. Construct `VoiceSession` with `params` from `llm_*` and `info` from settings plus `backend.model_label`.
+    3. `timer = TurnTimer(); audio = make_audio_io(s, stream, callbacks=timing_callbacks(timer))`
+    4. Construct `VoiceSession` with:
+       - `params` from `llm_*`
+       - `info` from settings plus `backend.model_label`
+       - the same `timer`
+       - `metrics_sink=lambda r: append_jsonl(REPO_ROOT / "logs" / "turns.jsonl", r)`
   - `main()` runs `uvicorn` on `web_host:web_port`. `if __name__ == "__main__": main()`, so `python -m voicebot.web` works.
   - Routes:
     - `GET /api/config` → `session.config()`.
@@ -973,17 +1164,23 @@ export interface OutputFormat { sample_rate: number; channels: number; encoding:
 export interface Defaults { system_prompt: string; temperature: number; top_p: number; max_tokens: number; voice: string }
 export interface ServerConfig { llm_backend: "transformers" | "llamacpp"; audio_io: "browser" | "server"; model_label: string;
   voices: string[]; output_format: OutputFormat | null; defaults: Defaults }
-export interface Metrics { ttft_ms: number | null; first_audio_ms: number | null; total_ms: number }
-export type ServerEvent = ({ type: "config" } & ServerConfig) | { type: "status"; state: Status } | { type: "user_transcript"; text: string }
+export const SPANS = ["silence_wait_ms", "stt_ms", "llm_ttft_ms", "filter_ms", "tts_first_audio_ms",
+  "playback_ms", "perceived_ms", "llm_total_ms", "total_ms"] as const;
+export type SpanName = (typeof SPANS)[number];
+export interface Metrics { turn_id: number; source: "voice" | "text"; interrupted: boolean;
+  marks: Record<string, number | null>; spans: Record<SpanName, number | null> }
+export type ServerEvent = ({ type: "config" } & ServerConfig) | { type: "status"; state: Status }
+  | { type: "user_transcript"; text: string; turn_id: number }
   | { type: "assistant_delta"; text: string } | { type: "assistant_done"; text: string; interrupted: boolean }
   | ({ type: "metrics" } & Metrics) | { type: "error"; code: string; message: string };
 export type ClientCommand = { type: "start_listening" } | { type: "stop_listening" } | { type: "stop_speaking" }
-  | { type: "send_text"; text: string } | ({ type: "update_settings" } & Partial<Defaults>) | { type: "clear" };
+  | { type: "send_text"; text: string } | ({ type: "update_settings" } & Partial<Defaults>) | { type: "clear" }
+  | { type: "playback_started"; turn_id: number };
 ```
 
   - **`state.ts`**:
     - `interface ChatMessage { id: number; role: "user" | "assistant"; text: string; streaming: boolean; interrupted: boolean }`
-    - `interface AppState { connected: boolean; listening: boolean; status: Status; config: ServerConfig | null; settings: Defaults | null; messages: ChatMessage[]; metrics: Metrics | null; error: string | null }`
+    - `interface AppState { connected: boolean; listening: boolean; status: Status; config: ServerConfig | null; settings: Defaults | null; messages: ChatMessage[]; metrics: Metrics | null; turnId: number | null; error: string | null }`. `user_transcript` sets `turnId`.
     - `type Action = { kind: "server"; event: ServerEvent } | { kind: "connected"; value: boolean } | { kind: "listening"; value: boolean } | { kind: "settings"; patch: Partial<Defaults> } | { kind: "error"; message: string } | { kind: "dismiss_error" } | { kind: "clear" }`
     - `initialState: AppState`; `reducer(state: AppState, action: Action): AppState`
   - **`pcm.ts`**:
@@ -1031,7 +1228,7 @@ describe("reducer", () => {
     const s2 = srv(reducer(s, { kind: "settings", patch: { temperature: 0.1 } }), cfg); expect(s2.settings?.temperature).toBe(0.1);
   });
   it("streams assistant deltas into one message and finalizes", () => {
-    let s = srv(initialState, { type: "user_transcript", text: "hi" });
+    let s = srv(initialState, { type: "user_transcript", text: "hi", turn_id: 3 }); expect(s.turnId).toBe(3);
     s = srv(s, { type: "assistant_delta", text: "Hel" }); s = srv(s, { type: "assistant_delta", text: "lo" });
     expect(s.messages.map(m => [m.role, m.text, m.streaming])).toEqual([["user", "hi", false], ["assistant", "Hello", true]]);
     s = srv(s, { type: "assistant_done", text: "Hello", interrupted: true });
@@ -1043,7 +1240,10 @@ describe("reducer", () => {
   });
   it("status, metrics, error, clear, dismiss", () => {
     let s = srv(initialState, { type: "status", state: "thinking" }); expect(s.status).toBe("thinking");
-    s = srv(s, { type: "metrics", ttft_ms: 300, first_audio_ms: 700, total_ms: 2000 }); expect(s.metrics?.ttft_ms).toBe(300);
+    s = srv(s, { type: "metrics", turn_id: 1, source: "text", interrupted: false, marks: {},
+      spans: { silence_wait_ms: null, stt_ms: null, llm_ttft_ms: 300, filter_ms: 0, tts_first_audio_ms: 200,
+               playback_ms: 30, perceived_ms: 530, llm_total_ms: 900, total_ms: 2000 } });
+    expect(s.metrics?.spans.perceived_ms).toBe(530);
     s = srv(s, { type: "error", code: "busy", message: "Busy" }); expect(s.error).toBe("Busy");
     s = reducer(reducer(s, { kind: "dismiss_error" }), { kind: "clear" }); expect(s.error).toBeNull(); expect(s.messages).toEqual([]);
   });
@@ -1073,20 +1273,25 @@ describe("reducer", () => {
     - `getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 } })`.
     - The worklet is loaded with `import url from "./mic-worklet.ts?worker&url"`.
     - The worklet resamples from `sampleRate` to 16000 using `resample` and `floatTo16BitPCM`, buffers 640 samples (40 ms), and posts each `Int16Array` with a transfer.
-  - **`player.ts`**: `createPlayer(format: OutputFormat): { push(buf: ArrayBuffer): void; flush(): void; close(): void }`.
+  - **`player.ts`**: `createPlayer(format: OutputFormat, onStarted: () => void): { push(buf: ArrayBuffer): void; flush(): void; close(): void }`.
     - `push` converts with `pcm16ToFloat` and resamples to `ctx.sampleRate`, then posts the result to the player worklet.
     - The worklet keeps a FIFO of Float32 chunks and fills each `process()` output from it, writing silence when empty. A `"flush"` message clears the FIFO.
+    - When `process()` outputs samples after the FIFO was empty, the worklet posts `"started"` to the main thread, which calls `onStarted()`. The device output latency (`ctx.outputLatency`, typically 10–40 ms) is not included.
   - **Components:**
     - `SettingsPanel({ config, settings, onChange(patch: Partial<Defaults>) })`: badges for `llm_backend` / `audio_io` / `model_label`; system prompt textarea; temperature 0–2 (step 0.05), top_p 0–1 (0.05), max tokens 32–1024 (step 16); voice `<select>`.
     - `ChatTranscript({ messages })`: auto-scrolls to the bottom. Streaming messages show a cursor; interrupted ones show an "interrupted" tag.
     - `Composer({ status, listening, connected, onToggleMic(), onSend(text), onStop(), onClear() })`: Enter sends and Shift+Enter adds a newline. Stop is enabled while `thinking` or `speaking`.
     - `StatusBar({ connected, status, metrics, error, onDismissError() })`
+      - It shows `perceived_ms` prominently as "Response: 1340 ms".
+      - Below that is one breakdown line built from `spans`: `silence 600 · stt 200 · llm 300 · filter 20 · tts 180 · play 40`, skipping null spans.
+      - The full `marks` and `spans` are in a hover tooltip.
   - **`App.tsx`:**
     - `useReducer(reducer, initialState)`; one `VoiceSocket` in a `useEffect`.
     - Settings changes dispatch locally at once, and `update_settings` is sent after a 300 ms debounce.
     - **Mic toggle in browser mode:** `startMic(pcm => socket.sendAudio(pcm))`, then `start_listening`. If permission is refused, dispatch `{kind:"error", message:"Microphone permission denied — typing still works."}`.
     - **Mic toggle in server mode:** send `start_listening` / `stop_listening` only.
     - `onAudio` calls `player.push` when `config.output_format` is set. The player is created on the first config event.
+    - The player's `onStarted` sends `{type:"playback_started", turn_id: state.turnId}` once per turn. Keep the last acked id in a ref, and skip the ack when `turnId` is null or already acked.
     - Stop sends `stop_speaking` and calls `player.flush()`. Clear sends `clear`, dispatches clear, and flushes.
   - **`styles.css`:**
     - Color tokens in `:root` with a dark theme.
@@ -1143,12 +1348,17 @@ it("backs off exponentially with cap", () => {
   - No `<think>` text appears.
   - Stop cuts the audio within about 0.5 s and the reply is tagged "interrupted".
   - The follow-up uses context.
-  - `first_audio_ms` is about 2000 or less with `llamacpp`.
+  - The StatusBar shows the response time and the stage breakdown after each turn.
+  - `logs/turns.jsonl` gains one line per turn.
 
-  Record each run's `ttft_ms` / `first_audio_ms` in a "Measured latency" table in the README.
+- [ ] **Step 4: Latency baseline.** For each `LLM_BACKEND` × `AUDIO_IO` combination, ask 10 short spoken questions (the same 10 for every run, listed in the README). Then run, from `server/`:
+  `../.venv/Scripts/python -m voicebot.latency_report --by llm_backend,audio_io --source voice`
+  - Pass criterion: the median `perceived_ms` with `llamacpp` is about 2000 or less.
+  - Paste the output into a "Measured latency" section of the README, with the date, GPU and `.env` values.
+  - Note which span is the largest. That tells you where to optimise next.
 
-- [ ] **Step 4: Production check.** Run `npm --prefix web run build`, then start only `python -m voicebot.web` and open http://127.0.0.1:8000. The UI loads and one voice turn works.
+- [ ] **Step 5: Production check.** Run `npm --prefix web run build`, then start only `python -m voicebot.web` and open http://127.0.0.1:8000. The UI loads and one voice turn works.
 
-- [ ] **Step 5: Final verification.** All of these must pass: `../.venv/Scripts/python -m pytest -v` from `server/`, plus `npm run test`, `npm run typecheck` and `npm run build` from `web/`.
+- [ ] **Step 6: Final verification.** All of these must pass: `../.venv/Scripts/python -m pytest -v` from `server/`, plus `npm run test`, `npm run typecheck` and `npm run build` from `web/`.
 
-- [ ] **Step 6: Commit** with the message `docs: add README, dev script and measured latency`.
+- [ ] **Step 7: Commit** with the message `docs: add README, dev script and measured latency`.
