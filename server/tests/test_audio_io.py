@@ -1,3 +1,4 @@
+import pytest
 from types import SimpleNamespace as NS
 from voicebot.config import Settings
 from voicebot import stt, tts
@@ -169,3 +170,10 @@ def test_make_tts_from_entry():
     mod = NS(KokoroEngine=lambda **k: built.update(k) or "engine")
     s = tts.make_tts(Settings.load(env={}), stream_cls=lambda eng: ("stream", eng), entry=e["kokoro"], module=mod)
     assert s == ("stream", "engine") and built == {"voice": "af_heart"}
+
+def test_set_recorder_and_output_format():
+    a, r2 = BrowserAudio(Rec(), {"sample_rate": 24000, "channels": 1, "encoding": "pcm_s16le"}), Rec()
+    a.set_recorder(r2); a.on_client_audio(b"x"); assert r2.fed == [(b"x", 16000)]
+    a.set_output_format({"sample_rate": 22050, "channels": 1, "encoding": "pcm_s16le"})
+    a.set_sink(lambda b: None); assert a.play(Stream(), lambda: None) == pytest.approx(2 / (2 * 22050))
+    s = ServerAudio(Rec()); s.set_recorder(r2); assert s.recorder is r2

@@ -54,6 +54,13 @@ class BrowserAudio:
     def mute_input(self, muted: bool) -> None:
         self._muted = muted
 
+    def set_recorder(self, recorder) -> None:
+        self.recorder = recorder
+
+    def set_output_format(self, output_format: dict) -> None:
+        """A TTS switch can change the sample rate (v2 spec §4.4)."""
+        self.output_format = output_format
+
     def set_sink(self, send_binary: Callable[[bytes], None] | None) -> None:
         with self._lock:
             self._sink = send_binary
@@ -97,6 +104,9 @@ class ServerAudio:
 
     def mute_input(self, muted: bool) -> None:
         self.recorder.set_microphone(not muted)
+
+    def set_recorder(self, recorder) -> None:
+        self.recorder = recorder
 
     def set_sink(self, send_binary: Callable[[bytes], None] | None) -> None:
         pass

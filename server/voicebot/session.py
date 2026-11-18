@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import string
 import threading
+import time
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Callable, Iterable, Iterator
@@ -25,7 +26,7 @@ from voicebot.conversation import Conversation
 from voicebot.llm.base import GenerationParams, LLMError
 from voicebot.speech_filter import filter_stream
 from voicebot.timing import TurnTimer
-from voicebot.tts import drain_audio_queue, set_voice
+from voicebot.tts import drain_audio_queue, list_voices, output_format as tts_output_format, set_voice
 
 log = logging.getLogger(__name__)
 
@@ -51,7 +52,8 @@ def _is_number(v) -> bool:
 class VoiceSession:
     def __init__(self, *, backend, audio, stream, conversation: Conversation, params: GenerationParams,
                  voice: str, voices: list[str], info: dict, timer: TurnTimer | None = None,
-                 metrics_sink: Callable[[dict], None] | None = None, ack_timeout: float = 1.0) -> None:
+                 metrics_sink: Callable[[dict], None] | None = None, ack_timeout: float = 1.0,
+                 models=None, callbacks: dict | None = None) -> None:
         self.backend, self.audio, self.stream, self.conversation = backend, audio, stream, conversation
         self.params, self.voice, self.voices, self.info = params, voice, list(voices), dict(info)
         self.timer = timer if timer is not None else TurnTimer()
@@ -72,6 +74,9 @@ class VoiceSession:
         self._listen_thread: threading.Thread | None = None
         self._threads: list[threading.Thread] = []
         self._stopper: threading.Thread | None = None  # in-flight stream.stop()
+        self.models = models                  # v2 ModelManager, or None (v1: fixed models)
+        self.callbacks = dict(callbacks or {})
+        self._switching = threading.Lock()    # one select_model at a time
 
     # ---------- wiring ----------
 
@@ -112,9 +117,20 @@ class VoiceSession:
     def config(self) -> dict:
         with self._state_lock:
             p, prompt, voice = self.params, self.conversation.system_prompt, self.voice
-        return {**self.info, "voices": list(self.voices), "output_format": self.audio.output_format,
-                "defaults": {"system_prompt": prompt, "temperature": p.temperature, "top_p": p.top_p,
-                             "max_tokens": p.max_tokens, "voice": voice}}
+        cfg = {**self.info, "voices": list(self.voices), "output_format": self.audio.output_format,
+               "defaults": {"system_prompt": prompt, "temperature": p.temperature, "top_p": p.top_p,
+                            "max_tokens": p.max_tokens, "voice": voice}}
+        if self.models is not None:
+            m, st = self.models.current, self.models.settings
+            cfg.update(stt_final=m.get("stt_final"), stt_realtime=m.get("stt_realtime", "off"), tts=m.get("tts"),
+                       gpu_total_mb=st.gpu_total_mb, llm_vram_mb=st.llm_vram_mb)
+        return cfg
+
+    def catalog(self) -> list[dict]:
+        if self.models is None:
+            return []
+        from dataclasses import asdict
+        return [asdict(e) for e in self.models.entries.values()]
 
     # ---------- commands ----------
 
@@ -128,6 +144,7 @@ class VoiceSession:
             "update_settings": self._update_settings,
             "clear": self._clear,
             "playback_started": self._playback_started,
+            "select_model": self._select_model,
         }.get(kind)  # type: ignore[arg-type]
         if handler is None:
             self._error("bad_command", f"unknown command type {kind!r}")
@@ -230,6 +247,105 @@ class VoiceSession:
                 self.conversation.system_prompt = cmd["system_prompt"]
             if "voice" in cmd and cmd["voice"] != self.voice:
                 self.voice = self._pending_voice = cmd["voice"]
+
+    # ---------- v2: model switching (spec §4.4) ----------
+
+    def on_partial(self, text: str) -> None:
+        """Realtime STT partial (recorder's on_realtime_transcription_update). Dropped during a turn."""
+        if self._turn_lock.locked():
+            return
+        self._emit({"type": "user_partial", "text": text})
+
+    def _select_model(self, cmd: dict) -> None:
+        role, slug = cmd.get("role"), cmd.get("slug")
+        if self._turn_lock.locked() or self._switching.locked():
+            self._error("busy", "Models can only be switched while idle.")
+            return
+        if self.models is None:
+            self._error("bad_model", "model switching is not available")
+            return
+        from voicebot.models import ModelError
+        try:
+            self.models.validate(role, slug)
+        except ModelError as e:
+            self._error("bad_model", str(e))
+            return
+        if not self._switching.acquire(blocking=False):
+            self._error("busy", "A model switch is already in progress.")
+            return
+        self._spawn(lambda: self._run_switch(role, slug), "model-switch")
+
+    def _pause_listening(self) -> bool:
+        """Stop the listen loop and wait for it, so the recorder can be replaced. Returns whether it was on."""
+        was = self._listening
+        listener = self._listen_thread
+        self._listening = False
+        self._listen_gen += 1
+        if listener is not None and listener.is_alive():
+            recorder = self.audio.recorder
+
+            def abort() -> None:
+                try:
+                    recorder.abort()
+                except Exception:
+                    log.exception("recorder.abort failed")
+            aborter = threading.Thread(target=abort, name="stt-abort-switch", daemon=True)
+            aborter.start()
+            aborter.join(timeout=2)
+            listener.join(timeout=10)
+        return was
+
+    def _run_switch(self, role: str, slug: str) -> None:
+        from voicebot.models import ModelError
+        t0 = time.monotonic()
+        was_listening = False
+        try:
+            self._emit({"type": "model_status", "role": role, "slug": slug, "state": "loading"})
+            if role != "tts":
+                was_listening = self._pause_listening()
+            with self._turn_lock:
+                try:
+                    if role == "tts":
+                        self._install_stream(self.models.switch_tts(slug, self.stream))
+                    else:
+                        self.audio.set_recorder(self.models.switch_stt(role, slug, self.audio.recorder))
+                except ModelError as e:
+                    if e.restored is not None:
+                        if role == "tts":
+                            self._install_stream(e.restored)
+                        else:
+                            self.audio.set_recorder(e.restored)
+                    self._emit({"type": "model_status", "role": role, "slug": slug, "state": "failed",
+                                "message": str(e)})
+                    return
+            self._emit({"type": "model_status", "role": role, "slug": slug, "state": "ready",
+                        "load_ms": round((time.monotonic() - t0) * 1000)})
+        except Exception as e:
+            log.exception("model switch %s=%s failed", role, slug)
+            self._emit({"type": "model_status", "role": role, "slug": slug, "state": "failed", "message": str(e)})
+        finally:
+            self._switching.release()
+            if was_listening:
+                self._start_listening({})
+            elif not self._turn_lock.locked():
+                self._set_status("idle")
+
+    def _install_stream(self, stream) -> None:
+        """Use a new TTS stream: refresh voices and, in browser mode, the output format (spec §4.4)."""
+        self.stream = stream
+        try:
+            voices = list_voices(stream)
+        except Exception:
+            voices = []
+        entry = self.models.entry("tts") if self.models is not None else None
+        with self._state_lock:
+            self.voices = voices or ["default"]
+            preferred = entry.voice if entry is not None else None
+            self.voice = preferred if preferred in self.voices else self.voices[0]
+            self._pending_voice = None
+        if self.audio.output_format is not None:
+            self.audio.set_output_format(tts_output_format(stream))
+            self._emit({"type": "config", **self.config()})
 
     def _clear(self, _cmd: dict) -> None:
         self.conversation.clear()
@@ -392,6 +508,10 @@ class VoiceSession:
         record.update(ts=datetime.now(timezone.utc).isoformat(timespec="milliseconds"), **self.info,
                       voice=self.voice, temperature=params.temperature, top_p=params.top_p,
                       max_tokens=params.max_tokens, reply_chars=reply_chars)
+        if self.models is not None:
+            m = self.models.current
+            record.update(stt_final=m.get("stt_final"), stt_realtime=m.get("stt_realtime", "off"),
+                          tts_model=m.get("tts"), runtime=self.models.runtime())
         try:
             self.metrics_sink(record)
         except Exception:

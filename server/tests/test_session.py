@@ -35,6 +35,8 @@ class FakeRecorder:
                 time.sleep(0.005)
         finally:
             with self._lock: self.active -= 1
+    @property
+    def waiting(self): return self.active > 0
     def abort(self):
         self.aborted = True
         if self.hang_on_idle_abort and self.active == 0:
@@ -63,6 +65,8 @@ class FakeAudio:
     def cut(self): self.cuts = getattr(self, "cuts", 0) + 1
     def set_sink(self, s): self.sink = s
     def on_client_audio(self, data): pass
+    def set_recorder(self, r): self.recorder = r
+    def set_output_format(self, fmt): self.output_format = fmt
     play_seconds = None   # BrowserAudio returns the seconds of audio it sent to the browser
     def play(self, stream, on_first_audio):
         self.log.append("play"); first = True
@@ -126,13 +130,13 @@ INFO = {"llm_backend": "llamacpp", "audio_io": "browser", "model_label": "fake-m
 @pytest.fixture
 def make(backend, audio, stream, conv, recorder, events, timer, sink):
     made = []
-    def _make():
+    def _make(**extra):
         audio.recorder = recorder
         # The real recorder marks these through stt.timing_callbacks (Task 8).
         recorder.on_stop = lambda: (timer.mark("speech_end"), timer.mark("endpoint"), timer.mark("stt_start"))
         s = VoiceSession(backend=backend, audio=audio, stream=stream, conversation=conv,
                          params=GenerationParams(0.7, 0.8, 256), voice="af_heart", voices=["af_heart", "am_adam"],
-                         info=INFO, timer=timer, metrics_sink=sink.append, ack_timeout=0.05)
+                         info=INFO, timer=timer, metrics_sink=sink.append, ack_timeout=0.05, **extra)
         s.attach(events.append, lambda b: None); made.append(s); return s
     yield _make
     if backend.gate is not None: backend.gate.set()
@@ -315,3 +319,67 @@ def test_stop_during_browser_playback_ends_turn_at_once(session, audio, events):
     time.sleep(0.1); t0 = time.monotonic(); session.handle({"type": "stop_speaking"})
     done = wait_for(lambda: next((e for e in events if e["type"] == "assistant_done"), None))
     assert time.monotonic() - t0 < 0.5 and done["interrupted"] is True
+
+
+# ---------- v2: model switching (plan Task 13) ----------
+
+from voicebot.catalog import by_slug, load_catalog
+from voicebot.config import REPO_ROOT, Settings
+from voicebot.models import ModelManager
+
+def fake_tts_stream(entry):
+    s = FakeStream(); rate = 22050 if entry.slug == "piper" else 24000
+    s.engine.get_stream_info = lambda: (8, 1, rate); s.slug = entry.slug
+    return s
+
+@pytest.fixture
+def session_with_models(make, recorder, stream):
+    pool = by_slug(load_catalog(REPO_ROOT / "bench" / "pool.toml"))
+    entries = [pool[s] for s in ("whisper-small-en", "nemotron-rt", "kokoro", "piper")]
+    first = [recorder]
+    rf = lambda final, realtime, **kw: first.pop() if first else FakeRecorder()
+    models = ModelManager(entries, Settings.load(env={}), recorder_factory=rf, tts_factory=fake_tts_stream,
+                          unload=lambda o: None)
+    models.start(False, {})
+    return make(models=models, callbacks={})
+
+def test_select_model_busy_during_turn(gated_session, events):
+    gated_session.handle({"type": "send_text", "text": "x"}); wait_for(lambda: "user_transcript" in types(events))
+    gated_session.handle({"type": "select_model", "role": "tts", "slug": "kokoro"})
+    assert events[-1]["code"] == "busy"
+
+def test_select_model_bad_slug(session_with_models, events):
+    session_with_models.handle({"type": "select_model", "role": "stt_final", "slug": "nemotron-rt"})
+    assert events[-1]["type"] == "error" and events[-1]["code"] == "bad_model"
+
+def test_select_model_while_listening_restarts_loop(session_with_models, recorder, events):   # Review Focus 1
+    session_with_models.handle({"type": "start_listening"}); wait_for(lambda: recorder.waiting)
+    session_with_models.handle({"type": "select_model", "role": "stt_realtime", "slug": "nemotron-rt"})
+    st = wait_for(lambda: next((e for e in events if e["type"] == "model_status" and e["state"] == "ready"), None))
+    assert recorder.aborted and st["role"] == "stt_realtime" and session_with_models.audio.recorder is not recorder
+    assert wait_for(lambda: session_with_models.audio.recorder.waiting)          # listening again on the new recorder
+
+def test_switch_while_listening_loses_no_turn(session_with_models, recorder, backend, events):  # Review Focus 1
+    session_with_models.handle({"type": "start_listening"}); wait_for(lambda: recorder.waiting)
+    session_with_models.handle({"type": "select_model", "role": "stt_realtime", "slug": "nemotron-rt"})
+    wait_for(lambda: any(e["type"] == "model_status" and e["state"] == "ready" for e in events))
+    new = session_with_models.audio.recorder; wait_for(lambda: new.waiting)
+    new.texts.append("What time is it?"); wait_for(lambda: "assistant_done" in types(events))
+    time.sleep(0.1)
+    assert len(backend.calls) == 1 and recorder.max_active == 1 and new.max_active == 1
+
+def test_tts_switch_sends_new_output_format(session_with_models, events):     # Review Focus 4
+    session_with_models.handle({"type": "select_model", "role": "tts", "slug": "piper"})   # fake stream reports 22050 Hz
+    cfg = wait_for(lambda: next((e for e in events if e["type"] == "config"), None))
+    assert cfg["output_format"]["sample_rate"] == 22050 and cfg["tts"] == "piper"
+    assert session_with_models.stream.slug == "piper"
+
+def test_partials_and_metrics_slugs(session_with_models, sink, events):
+    session_with_models.on_partial("hel"); assert events[-1] == {"type": "user_partial", "text": "hel"}
+    session_with_models.handle({"type": "send_text", "text": "x"}); wait_for(lambda: sink)
+    assert sink[0]["stt_final"] == "whisper-small-en" and sink[0]["tts_model"] == "kokoro" and "runtime" in sink[0]
+
+def test_config_has_model_fields(session_with_models):
+    c = session_with_models.config()
+    assert (c["stt_final"], c["stt_realtime"], c["tts"], c["gpu_total_mb"], c["llm_vram_mb"]) == \
+        ("whisper-small-en", "off", "kokoro", 32607, 7000)
