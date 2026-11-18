@@ -12,7 +12,9 @@ cd "$root"
 API=$!
 trap 'kill $API 2>/dev/null || true' EXIT
 
-echo "API starting (first start loads the models; watch for 'Uvicorn running')."
-echo "From your PC: ssh -L 8000:localhost:8000 -L 5173:localhost:5173 $USER@<vm-ip>"
+port="${WEB_PORT:-$(grep -E '^WEB_PORT=' .env 2>/dev/null | tail -1 | cut -d= -f2)}"
+port="${port:-8000}"
+echo "API starting on port $port (first start loads the models; watch for 'Uvicorn running')."
+echo "From your PC: ssh -L $port:localhost:$port -L 5173:localhost:5173 $USER@<vm-ip>"
 echo "Then open http://localhost:5173"
 npm --prefix web run dev

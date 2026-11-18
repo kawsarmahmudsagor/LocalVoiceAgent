@@ -79,6 +79,8 @@ ssh -L 8000:localhost:8000 -L 5173:localhost:5173 xr23@<vm-ip>
 ```
 Then open http://localhost:5173 (dev) or http://localhost:8000 (production build). The browser treats `localhost` as a secure context, so the microphone works with no certificate.
 
+If port 8000 is taken on the VM, set `WEB_PORT` in `.env` (for example `8001`). The Vite dev proxy and the tunnel command printed by `scripts/dev.sh` follow it; use that port in the `ssh -L` command and the production URL.
+
 **HTTPS on the LAN address (optional):** run `scripts/make_cert.sh [ip]`, then set `WEB_HOST=0.0.0.0`, `WEB_SSL_CERTFILE=certs/cert.pem` and `WEB_SSL_KEYFILE=certs/key.pem`. Open `https://<vm-ip>:8000` and accept the certificate once.
 
 **Not available on the VM:** the `transformers` backend, because its 19 GB checkpoint is outside the disk budget. Server audio (`AUDIO_IO=server`) is also unavailable, because the VM has no microphone or speakers, and the app refuses to start with it.
