@@ -68,7 +68,7 @@ class LlamaServer:
     def command(self) -> list[str]:
         s = self.settings
         return [str(s.llama_server_path), "-hf", s.llama_hf_repo, "--no-mmproj", "--jinja",
-                "-ngl", "99", "-c", str(s.llama_ctx), "--host", s.llama_host, "--port", str(s.llama_port)]
+                "-ngl", "99", "-np", "1", "-c", str(s.llama_ctx), "--host", s.llama_host, "--port", str(s.llama_port)]
 
     def start(self) -> None:
         s = self.settings

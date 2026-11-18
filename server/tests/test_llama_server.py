@@ -29,7 +29,7 @@ def make(exe, tmp_path, statuses=(200,), proc=None, port_busy=False, **env):
 def test_command(exe, tmp_path):
     srv, _ = make(exe, tmp_path)
     assert srv.command() == [str(exe), "-hf", "unsloth/Qwen3.5-9B-GGUF:Q4_K_M", "--no-mmproj", "--jinja",
-                             "-ngl", "99", "-c", "8192", "--host", "127.0.0.1", "--port", "8081"]
+                             "-ngl", "99", "-np", "1", "-c", "8192", "--host", "127.0.0.1", "--port", "8081"]
 
 def test_missing_binary(tmp_path):
     srv, _ = make(tmp_path / "nope.exe", tmp_path)
