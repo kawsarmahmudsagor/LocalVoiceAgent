@@ -63,3 +63,8 @@ def test_realtime_families_can_run_the_baseline_final():                  # fina
     for rt in [x for x in load_catalog(POOL) if x.role == "realtime"]:
         req = (REPO_ROOT / "bench" / "families" / f"{rt.family}.txt").read_text()
         assert "faster-whisper" in req, f"{rt.family} venv cannot run whisper-small-en as the final engine"
+
+def test_engine_kwargs_coqui_reference_voice(tmp_path):
+    e = by_slug(load_catalog(POOL))
+    assert engine_kwargs(e["coqui-xtts-v2"], NS(), root=tmp_path) == \
+        {"voice": str(tmp_path / "assets/ref_voice.wav"), "language": "en", "device": "cuda"}

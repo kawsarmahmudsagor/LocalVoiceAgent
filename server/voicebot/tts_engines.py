@@ -38,6 +38,9 @@ def engine_kwargs(entry: Entry, module, *, root: Path, piper_path: str | None = 
         opts["voice"] = module.PiperVoice(model_file=str(model_dir / f"{entry.model}.onnx"),
                                           config_file=str(model_dir / f"{entry.model}.onnx.json"))
         opts["piper_path"] = piper_path or default_piper_path()
+    elif entry.engine == "CoquiEngine":
+        if isinstance(opts.get("voice"), str) and opts["voice"].endswith(".wav"):
+            opts["voice"] = _abs(root, opts["voice"])  # coqui.md: voice = reference WAV filename
     elif entry.engine == "ChatterboxEngine":
         prompt = opts.pop("audio_prompt_path", None)
         if prompt:

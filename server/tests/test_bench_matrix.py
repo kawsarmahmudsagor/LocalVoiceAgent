@@ -45,3 +45,21 @@ def test_parse_shortlist_round_trip():
     from voicebot.bench.matrix import parse_shortlist
     picks = {"stt_final": ["whisper-small-en", "a"], "stt_realtime": [], "tts": ["kokoro"]}
     assert parse_shortlist(render([], picks)) == picks
+
+def test_forced_picks_join_the_shortlist():
+    rows = [r("whisper-small-en", "final", wer=0.08, latency_median_ms=300),
+            r("qwen3-asr-1-7b", "final", wer=0.5, latency_median_ms=900),
+            r("kokoro", "tts", verdict="ok", latency_median_ms=150),
+            r("coqui-xtts-v2", "tts", state="dropped", note="import failed")]
+    picks = shortlist(rows, include={"stt_final": ["qwen3-asr-1-7b"], "tts": ["coqui-xtts-v2"]})
+    assert picks["stt_final"] == ["whisper-small-en", "qwen3-asr-1-7b"]   # forced despite WER
+    assert picks["tts"] == ["kokoro"]                                    # dropped entries cannot run
+    md = render(rows, picks, include={"stt_final": ["qwen3-asr-1-7b"], "tts": ["coqui-xtts-v2"]}, reason="user request")
+    over = md.split("## Overrides")[1]
+    assert "qwen3-asr-1-7b" in over and "coqui-xtts-v2" in over and "not included" in over
+
+def test_overrides_file(tmp_path):
+    from voicebot.bench.matrix import load_overrides
+    p = tmp_path / "o.toml"; p.write_text('reason = "user"\n[include]\ntts = ["coqui-xtts-v2"]\n')
+    assert load_overrides(p) == ({"tts": ["coqui-xtts-v2"]}, "user")
+    assert load_overrides(tmp_path / "missing.toml") == ({}, None)

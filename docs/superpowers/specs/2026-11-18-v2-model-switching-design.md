@@ -130,6 +130,10 @@ Every entry must install against the shared `torch==2.7.1+cu128`. An entry whose
 | TTS | `inflect-cuda` | `InflectEngine` (PyTorch) | Inflect-Micro-v2 | cuda | 0.3 GB | fast fixed English voice |
 | TTS | `piper` | `PiperEngine` | one English Piper voice (`en_US-lessac-medium`) | cpu | 0.1 GB | fastest CPU engine; Linux `piper-tts` package, no manual binary |
 | TTS | `chatterbox` | `ChatterboxEngine` | `chatterbox-tts` default | cuda | 3 GB | quality voice cloning; kept only if it resolves on torch 2.7.1 |
+| Final STT | `qwen3-asr-1-7b` | `qwen3_asr` | `Qwen/Qwen3-ASR-1.7B` | cuda | ≈ 4.5 GB | **user request (2026-11-18)**; always on the shortlist via `bench/overrides.toml` |
+| TTS | `coqui-xtts-v2` | `CoquiEngine` | XTTS v2 (v2.0.2), cloning `assets/ref_voice.wav` | cuda | ≈ 2 GB | **user request (2026-11-18)**; always on the shortlist via `bench/overrides.toml` |
+
+Both user-requested entries resolve with `torch==2.7.1+cu128` (`uv pip compile`, 2026-11-18: `qwen-asr 0.0.6` with `transformers 4.57.6`; `coqui-tts 0.28.0`). They add about 7 GB to the §3.2 budget.
 
 **Reference voice.** `qwen-cuda` and `chatterbox` clone a voice. The bench installer generates `assets/ref_voice.wav` once with Kokoro (`af_heart`), from the sentence in `assets/ref_voice.txt`, so the reference text matches the audio exactly.
 
@@ -150,7 +154,7 @@ Exact options come from each engine's doc under `RealtimeSTT/docs/engines/` and 
 Engines **not** in the pool, and why:
 
 - **Covered by a pool entry:** NeMo Parakeet, parakeet-onnx, openai-whisper, whisper-cpp, the other Whisper sizes, Orukeet (European languages), the Moonshine variants, kroko-fp32.
-- **Over the budget, or LLM-style ASR that is slower by design:** Granite Speech, Qwen3-ASR, Cohere Transcribe, FunASR, Omnilingual ASR, Higgs (SGLang image), Parler, Coqui XTTS (old pins), Orpheus (needs a 3B LLM endpoint).
+- **Over the budget, or LLM-style ASR that is slower by design:** Granite Speech, Cohere Transcribe, FunASR, Omnilingual ASR, Higgs (SGLang image), Parler, Orpheus (needs a 3B LLM endpoint). Qwen3-ASR and Coqui XTTS were excluded here at first and added back on user request (§3.1).
 - **Low value for a latency test:** OmniVoice, LuxTTS, NeuTTS, Pocket, Sopro, Soprano, MOSS, StyleTTS, ZipVoice, `system` (espeak quality on a headless VM), `qwen-cpu` (the GPU is free).
 
 ### 3.3 Method

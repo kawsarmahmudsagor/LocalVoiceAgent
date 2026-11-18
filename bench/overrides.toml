@@ -1,0 +1,7 @@
+# User overrides of the shortlist rule (v2 spec §3.4). Entries listed here always join the shortlist,
+# and so the UI dropdowns, unless Phase A could not run them (dropped / failed / missing).
+reason = "User request 2026-11-18: always offer Qwen3-ASR 1.7B and Coqui XTTS v2 in the UI."
+
+[include]
+stt_final = ["qwen3-asr-1-7b"]
+tts = ["coqui-xtts-v2"]

@@ -45,6 +45,16 @@ family = "sherpa"
 fetch = "sherpa:parakeet"
 options = { provider = "cpu", num_threads = 7, download_root = "models/sherpa-onnx" }
 
+# Added on user request (2026-11-18), overriding spec §3.2; forced onto the shortlist by bench/overrides.toml.
+[[entry]]
+slug = "qwen3-asr-1-7b"
+kind = "stt"
+role = "final"
+engine = "qwen3_asr"
+model = "Qwen/Qwen3-ASR-1.7B"
+device = "cuda"
+family = "qwen-asr"
+
 # ---------------- Realtime STT ----------------
 [[entry]]
 slug = "nemotron-rt"
@@ -126,3 +136,14 @@ model = "chatterbox-tts"
 device = "cuda"
 family = "chatterbox"
 options = { audio_prompt_path = "assets/ref_voice.wav", device = "cuda" }
+
+# Added on user request (2026-11-18), overriding spec §3.2; forced onto the shortlist by bench/overrides.toml.
+# RealtimeTTS/docs/engines/coqui.md: default model xtts_v2 (v2.0.2); voice = reference WAV for cloning.
+[[entry]]
+slug = "coqui-xtts-v2"
+kind = "tts"
+engine = "CoquiEngine"
+model = "xtts_v2"
+device = "cuda"
+family = "coqui"
+options = { voice = "assets/ref_voice.wav", language = "en", device = "cuda" }

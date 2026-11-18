@@ -57,7 +57,7 @@ Don't re-open these unless the user asks.
 - **llama-server:** runs from the Docker image `ghcr.io/ggml-org/llama.cpp:server-cuda`. If it lacks `sm_120` kernels, build an image in a container (`scripts/build_llama_image.sh`, plan Task 4).
 - **Audio:** browser mode only. The VM has no mic or speakers, so `AUDIO_IO=server` is rejected on Linux.
 - **Disk:** the user set a budget of about 35 GB for v2: venvs, weights, images and the LLM.
-- **Curated pool (12 entries):** listed in spec §3.1, with the reasons for each excluded engine in spec §3.2. It was chosen for the best latency per GB.
+- **Curated pool (14 entries):** listed in spec §3.1, with the reasons for each excluded engine in spec §3.2. 12 were chosen for the best latency per GB; `qwen3-asr-1-7b` and `coqui-xtts-v2` were added on user request and are forced onto the shortlist by `bench/overrides.toml`.
 - **Torch:** exactly `torch==2.7.1+cu128` (it supports `sm_120`) in every venv. An engine that needs another torch version is dropped and recorded, not worked around. This also keeps disk low, because uv hardlinks one torch copy into every venv.
 - **Shortlist rule (spec §3.4):**
   - Final STT: up to 3 engines, with WER at most 2 points worse than `whisper-small-en`, ranked by latency.
