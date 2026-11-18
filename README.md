@@ -44,6 +44,8 @@ Both take effect on restart. Every other setting is listed with its default in [
 
 ## Run
 
+**One click:** double-click `run-local.bat` (or run it from a terminal). On the first run it does the setup steps above that are missing: Python environment, llama.cpp, `.env` and web packages. It then builds the UI, starts the server and opens http://127.0.0.1:8000 when the models are loaded. Close the window or press Ctrl+C to stop.
+
 **Development** (hot reload for the UI):
 ```powershell
 .\scripts\dev.ps1
