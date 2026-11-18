@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping, TypeVar
@@ -66,9 +67,14 @@ class Settings:
     history_turns: int
     web_host: str
     web_port: int
+    llama_runtime: str = "binary"
+    llama_image: str = "ghcr.io/ggml-org/llama.cpp:server-cuda"
+    web_ssl_certfile: Path | None = None
+    web_ssl_keyfile: Path | None = None
 
     @classmethod
-    def load(cls, env: Mapping[str, str] | None = None, env_file: Path | None = None) -> "Settings":
+    def load(cls, env: Mapping[str, str] | None = None, env_file: Path | None = None, *,
+             platform: str = sys.platform) -> "Settings":
         if env is None:
             values = {k: v for k, v in dotenv_values(env_file or REPO_ROOT / ".env").items() if v is not None}
             values.update(os.environ)
@@ -87,12 +93,29 @@ class Settings:
         server_path = Path(get("LLAMA_SERVER_PATH", "tools/llama/llama-server.exe"))
         if not server_path.is_absolute():
             server_path = REPO_ROOT / server_path
+        linux = platform.startswith("linux")
+        audio_io = get("AUDIO_IO", "browser", _choice("browser", "server"))
+        if linux and audio_io == "server":
+            raise ConfigError("AUDIO_IO=server: server audio is not supported on the VM; use browser mode")
+
+        def path_or_none(name: str) -> Path | None:
+            raw = get(name, "")
+            if not raw:
+                return None
+            p = Path(raw)
+            return p if p.is_absolute() else REPO_ROOT / p
+
+        certfile, keyfile = path_or_none("WEB_SSL_CERTFILE"), path_or_none("WEB_SSL_KEYFILE")
+        if (certfile is None) != (keyfile is None):
+            missing = "WEB_SSL_KEYFILE" if keyfile is None else "WEB_SSL_CERTFILE"
+            raise ConfigError(f"{missing} is required when the other WEB_SSL_* variable is set")
+
         host = get("LLAMA_HOST", "127.0.0.1")
         port = get("LLAMA_PORT", "8081", int)
 
         return cls(
             llm_backend=get("LLM_BACKEND", "llamacpp", _choice("transformers", "llamacpp")),
-            audio_io=get("AUDIO_IO", "browser", _choice("browser", "server")),
+            audio_io=audio_io,
             hf_model_id=get("HF_MODEL_ID", "Qwen/Qwen3.5-9B"),
             hf_load_in_4bit=get("HF_LOAD_IN_4BIT", "true", _bool),
             llama_autostart=get("LLAMA_AUTOSTART", "true", _bool),
@@ -115,4 +138,8 @@ class Settings:
             history_turns=get("HISTORY_TURNS", "10", int),
             web_host=get("WEB_HOST", "127.0.0.1"),
             web_port=get("WEB_PORT", "8000", int),
+            llama_runtime=get("LLAMA_RUNTIME", "docker" if linux else "binary", _choice("docker", "binary")),
+            llama_image=get("LLAMA_IMAGE", "ghcr.io/ggml-org/llama.cpp:server-cuda"),
+            web_ssl_certfile=certfile,
+            web_ssl_keyfile=keyfile,
         )

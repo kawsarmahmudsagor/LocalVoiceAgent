@@ -54,7 +54,7 @@ def test_make_audio_io_selects_mode():
     calls = []
     f = lambda settings, use_microphone, callbacks=None: calls.append(use_microphone) or Rec()
     assert isinstance(make_audio_io(Settings.load(env={"AUDIO_IO": "browser"}), Stream(), recorder_factory=f), BrowserAudio)
-    assert isinstance(make_audio_io(Settings.load(env={"AUDIO_IO": "server"}), Stream(), recorder_factory=f), ServerAudio)
+    assert isinstance(make_audio_io(Settings.load(env={"AUDIO_IO": "server"}, platform="win32"), Stream(), recorder_factory=f), ServerAudio)
     assert calls == [False, True]
 
 def test_expose_cuda_dlls_prepends_torch_lib(tmp_path, monkeypatch):

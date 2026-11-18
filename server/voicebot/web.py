@@ -197,7 +197,10 @@ def main() -> None:
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     settings = Settings.load()
-    uvicorn.run(create_app(settings), host=settings.web_host, port=settings.web_port, log_level="info")
+    ssl = {}
+    if settings.web_ssl_certfile and settings.web_ssl_keyfile:
+        ssl = {"ssl_certfile": str(settings.web_ssl_certfile), "ssl_keyfile": str(settings.web_ssl_keyfile)}
+    uvicorn.run(create_app(settings), host=settings.web_host, port=settings.web_port, log_level="info", **ssl)
 
 
 if __name__ == "__main__":

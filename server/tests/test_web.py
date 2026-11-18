@@ -72,3 +72,11 @@ def test_ws_rejects_cross_origin_pages(ctx):                  # review #5: other
     assert fake.emit is None                                   # never attached
     with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
         assert ws.receive_json()["type"] == "config"           # same origin is fine
+
+def test_main_passes_ssl(monkeypatch):
+    from voicebot import web
+    seen, real_load = {}, Settings.load
+    monkeypatch.setattr("uvicorn.run", lambda app, **kw: seen.update(kw))
+    monkeypatch.setattr("voicebot.web.Settings.load", classmethod(lambda cls, **k: real_load(
+        env={"WEB_SSL_CERTFILE": "c.pem", "WEB_SSL_KEYFILE": "k.pem"}, platform="linux")))
+    web.main(); assert seen["ssl_certfile"].endswith("c.pem") and seen["ssl_keyfile"].endswith("k.pem")

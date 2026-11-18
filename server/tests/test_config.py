@@ -32,4 +32,17 @@ def test_invalid_value_names_variable(var, val):
 def test_reads_dotenv_file(tmp_path, monkeypatch):
     monkeypatch.delenv("AUDIO_IO", raising=False)
     (tmp_path / ".env").write_text("AUDIO_IO=server\n")
-    assert Settings.load(env_file=tmp_path / ".env").audio_io == "server"
+    assert Settings.load(env_file=tmp_path / ".env", platform="win32").audio_io == "server"
+
+def test_linux_defaults_and_server_audio_rejected():
+    s = Settings.load(env={}, platform="linux")
+    assert s.llama_runtime == "docker" and s.llama_image == "ghcr.io/ggml-org/llama.cpp:server-cuda"
+    assert Settings.load(env={}, platform="win32").llama_runtime == "binary"
+    with pytest.raises(ConfigError, match="server audio is not supported on the VM"):
+        Settings.load(env={"AUDIO_IO": "server"}, platform="linux")
+
+def test_ssl_pair_required():
+    with pytest.raises(ConfigError, match="WEB_SSL_KEYFILE"):
+        Settings.load(env={"WEB_SSL_CERTFILE": "certs/cert.pem"}, platform="linux")
+    s = Settings.load(env={"WEB_SSL_CERTFILE": "certs/cert.pem", "WEB_SSL_KEYFILE": "certs/key.pem"}, platform="linux")
+    assert s.web_ssl_certfile.name == "cert.pem" and s.web_ssl_certfile.is_absolute()
