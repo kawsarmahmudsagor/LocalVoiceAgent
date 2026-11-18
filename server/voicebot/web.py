@@ -21,6 +21,7 @@ log = logging.getLogger(__name__)
 
 WEB_DIST = REPO_ROOT / "web" / "dist"
 TURNS_LOG = REPO_ROOT / "logs" / "turns.jsonl"
+TURNS_TEXT_LOG = REPO_ROOT / "logs" / "turns.log"  # human-readable copy of TURNS_LOG
 CLOSE_TRY_AGAIN_LATER = 1013
 CLOSE_POLICY_VIOLATION = 1008
 
@@ -43,7 +44,7 @@ def build_session(settings: Settings):
     from voicebot.llm.factory import make_backend
     from voicebot.session import VoiceSession
     from voicebot.stt import timing_callbacks
-    from voicebot.timing import TurnTimer, append_jsonl
+    from voicebot.timing import TurnTimer, append_jsonl, append_turn_text
     from voicebot.tts import list_voices, make_tts, warm_up
 
     s = settings
@@ -68,7 +69,7 @@ def build_session(settings: Settings):
         conversation=Conversation(s.system_prompt, s.history_turns),
         params=GenerationParams(s.llm_temperature, s.llm_top_p, s.llm_max_tokens),
         voice=s.tts_voice, voices=list_voices(stream), info=info, timer=timer,
-        metrics_sink=lambda record: append_jsonl(TURNS_LOG, record))
+        metrics_sink=lambda record: (append_jsonl(TURNS_LOG, record), append_turn_text(TURNS_TEXT_LOG, record)))
     _close_session = session.close
     session.close = lambda: shutdown_resources(_close_session, audio.recorder, backend)  # type: ignore[method-assign]
     return session

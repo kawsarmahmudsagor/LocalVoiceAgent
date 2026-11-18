@@ -61,7 +61,7 @@ In browser mode, the microphone only works on `localhost` or over HTTPS.
 
 ## Latency
 
-Every turn records a timestamp at each pipeline stage. The UI shows "Response: N ms" (end of speech, or a typed send, to first sound) with a per-stage breakdown; hover it for every mark and span. The server logs one `turn timing` line per turn and appends a JSON record to `logs/turns.jsonl`.
+Every turn records a timestamp at each pipeline stage. The UI shows "Response: N ms" (end of speech, or a typed send, to first sound) with a per-stage breakdown; hover it for every mark and span. The server logs one `turn timing` line per turn and appends a JSON record to `logs/turns.jsonl` (for `latency_report`) and a readable block, with times in seconds and ms, to `logs/turns.log`.
 
 | Span | What it measures |
 |---|---|

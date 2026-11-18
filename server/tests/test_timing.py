@@ -39,3 +39,33 @@ def test_unknown_stage_raises():
 def test_append_jsonl(tmp_path):
     p = tmp_path / "logs" / "t.jsonl"; append_jsonl(p, {"a": 1}); append_jsonl(p, {"a": 2})
     assert [json.loads(l) for l in p.read_text().splitlines()] == [{"a": 1}, {"a": 2}]
+
+def test_fmt_ms_shows_seconds_and_ms():
+    from voicebot.timing import fmt_ms
+    assert fmt_ms(1234) == "1.234 s (1234 ms)"
+    assert fmt_ms(5) == "0.005 s (5 ms)"
+    assert fmt_ms(None) == "-"
+
+def test_format_turn_is_readable():
+    from voicebot.timing import SPANS, format_turn
+    rec = {"turn_id": 3, "source": "voice", "interrupted": True, "ts": "2026-11-18T10:22:31.123+00:00",
+           "llm_backend": "llamacpp", "model_label": "qwen", "audio_io": "browser", "stt_model": "small.en",
+           "voice": "af_heart", "temperature": 0.7, "top_p": 0.9, "max_tokens": 512, "reply_chars": 42,
+           "spans": {s: None for s in SPANS} | {"perceived_ms": 1234, "stt_ms": 87}}
+    text = format_turn(rec)
+    assert text.startswith("=== Turn 3 | voice | interrupted | 2026-11-18 10:22:31.123 UTC ===")
+    assert "llm_backend=llamacpp" in text and "voice=af_heart" in text
+    lines = text.splitlines()
+    assert any(l.split()[:1] == ["perceived"] and "1.234 s (1234 ms)" in l for l in lines)
+    assert any(l.split()[:1] == ["stt"] and "0.087 s (87 ms)" in l for l in lines)
+    assert any(l.split()[:1] == ["silence_wait"] and l.rstrip().endswith("-") for l in lines)
+    assert text.endswith("\n\n")
+
+def test_append_turn_text(tmp_path):
+    from voicebot.timing import SPANS, append_turn_text
+    p = tmp_path / "logs" / "turns.log"
+    rec = {"turn_id": 1, "source": "text", "interrupted": False, "ts": "2026-11-18T10:00:00.000+00:00",
+           "spans": {s: 100 for s in SPANS}}
+    append_turn_text(p, rec); append_turn_text(p, rec | {"turn_id": 2})
+    t = p.read_text()
+    assert t.count("=== Turn ") == 2 and "0.100 s (100 ms)" in t

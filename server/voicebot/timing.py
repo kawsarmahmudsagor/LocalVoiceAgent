@@ -111,3 +111,39 @@ def append_jsonl(path: Path, record: dict) -> None:
             f.write(json.dumps(record, separators=(",", ":"), ensure_ascii=False) + "\n")
     except OSError:
         log.exception("could not append to %s", path)
+
+
+_CONTEXT_KEYS = ("llm_backend", "model_label", "audio_io", "stt_model", "stt_device", "voice",
+                 "temperature", "top_p", "max_tokens", "reply_chars")
+
+
+def fmt_ms(ms: int | None) -> str:
+    """1234 -> '1.234 s (1234 ms)'; None -> '-'."""
+    return "-" if ms is None else f"{ms / 1000:.3f} s ({ms} ms)"
+
+
+def format_turn(record: dict) -> str:
+    """Render one turn record as a readable text block, times in seconds and ms."""
+    ts = str(record.get("ts", ""))
+    ts = ts.replace("T", " ").replace("+00:00", " UTC") if ts else "-"
+    head = [f"Turn {record.get('turn_id', '?')}", str(record.get("source", "?"))]
+    if record.get("interrupted"):
+        head.append("interrupted")
+    lines = [f"=== {' | '.join(head)} | {ts} ==="]
+    ctx = [f"{k}={record[k]}" for k in _CONTEXT_KEYS if record.get(k) is not None]
+    if ctx:
+        lines.append("  " + "  ".join(ctx))
+    spans = record.get("spans") or {}
+    for span in SPANS:
+        lines.append(f"  {span.removesuffix('_ms'):<18}{fmt_ms(spans.get(span))}")
+    return "\n".join(lines) + "\n\n"
+
+
+def append_turn_text(path: Path, record: dict) -> None:
+    """Append one readable turn block. Never raises on I/O errors: logging must not fail a turn."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(format_turn(record))
+    except OSError:
+        log.exception("could not append to %s", path)
