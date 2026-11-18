@@ -1,0 +1,9 @@
+# Bench family "kroko" (v2 plan Task 6). Paths are relative to the repo root: run uv from there.
+# python-dotenv: voicebot.config needs it (the server is installed with --no-deps).
+# RealtimeSTT's base requirements include torch, so pin the CUDA build here too.
+# Kroko-ONNX itself is built from source by bench_install.sh (stt-install-kroko --build).
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.7.1+cu128
+torchaudio==2.7.1+cu128
+-e ./RealtimeSTT[kroko-builder,silero-onnx-cpu,server]
+python-dotenv

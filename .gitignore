@@ -36,3 +36,10 @@ Thumbs.db
 # HTTPS certificates (scripts/make_cert.sh) and the llama.cpp source for build_llama_image.sh
 certs/
 tools/llama.cpp-src/
+
+# Bench (v2 Phase A): venvs, weights, outputs and recorded clips
+venvs/
+models/
+bench/out/
+bench/results/
+bench/clips/*.wav

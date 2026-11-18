@@ -1,0 +1,6 @@
+# Bench family "piper" (v2 plan Task 6). Paths are relative to the repo root: run uv from there.
+# python-dotenv: voicebot.config needs it (the server is installed with --no-deps).
+# piper-tts provides the piper executable (PiperEngine) and piper.download_voices.
+-e ./RealtimeTTS[piper]
+piper-tts
+python-dotenv

@@ -1,0 +1,7 @@
+# Bench family "faster-whisper" (v2 plan Task 6). Paths are relative to the repo root: run uv from there.
+# python-dotenv: voicebot.config needs it (the server is installed with --no-deps).
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.7.1+cu128
+torchaudio==2.7.1+cu128
+-e ./RealtimeSTT[faster-whisper,server]
+python-dotenv

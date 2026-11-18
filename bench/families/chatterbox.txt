@@ -1,0 +1,8 @@
+# Bench family "chatterbox" (v2 plan Task 6). Paths are relative to the repo root: run uv from there.
+# python-dotenv: voicebot.config needs it (the server is installed with --no-deps).
+# Dropped and recorded if chatterbox-tts cannot resolve with torch 2.7.1 (spec §3.1).
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.7.1+cu128
+torchaudio==2.7.1+cu128
+-e ./RealtimeTTS[chatterbox]
+python-dotenv

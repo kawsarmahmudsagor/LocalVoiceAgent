@@ -1,0 +1,6 @@
+# Bench family "qwen" (v2 plan Task 6). Paths are relative to the repo root: run uv from there.
+# python-dotenv: voicebot.config needs it (the server is installed with --no-deps).
+# The Qwen native wheel brings its own CUDA runtime; no torch needed.
+--only-binary=realtimetts-qwen-native
+-e ./RealtimeTTS[qwen]
+python-dotenv

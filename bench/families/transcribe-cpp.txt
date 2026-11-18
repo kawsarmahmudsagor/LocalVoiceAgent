@@ -1,0 +1,9 @@
+# Bench family "transcribe-cpp" (v2 plan Task 6). Paths are relative to the repo root: run uv from there.
+# python-dotenv: voicebot.config needs it (the server is installed with --no-deps).
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.7.1+cu128
+torchaudio==2.7.1+cu128
+-e ./RealtimeSTT[transcribe-cpp,server]
+# CUDA provider wheel from the upstream release (RealtimeSTT/docs/engines/transcribe-cpp.md)
+transcribe_cpp_native_cu12 @ https://github.com/handy-computer/transcribe.cpp/releases/download/v0.2.1/transcribe_cpp_native_cu12-0.2.1-py3-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+python-dotenv
