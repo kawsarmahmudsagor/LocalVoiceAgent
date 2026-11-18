@@ -105,3 +105,12 @@ def test_serialize_method_prevents_overlap():
     p = Player(); ts = [threading.Thread(target=p.stop) for _ in range(3)]
     [t.start() for t in ts]; [t.join() for t in ts]
     assert not Player.overlap and p.stop(immediate=True) is True
+
+def test_drain_audio_queue_empties_engine_and_wrapped_queues():
+    import queue
+    inner, outer = queue.Queue(), queue.Queue()
+    for q in (inner, outer): q.put(b"old"); q.put(b"older")
+    outer.wrapped = inner
+    s = Stream(); s.engine.queue = outer
+    assert tts.drain_audio_queue(s) == 4 and inner.empty() and outer.empty()
+    tts.drain_audio_queue(Stream())                     # engine without a queue: no error

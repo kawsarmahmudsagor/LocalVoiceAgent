@@ -25,7 +25,7 @@ from voicebot.conversation import Conversation
 from voicebot.llm.base import GenerationParams, LLMError
 from voicebot.speech_filter import filter_stream
 from voicebot.timing import TurnTimer
-from voicebot.tts import set_voice
+from voicebot.tts import drain_audio_queue, set_voice
 
 log = logging.getLogger(__name__)
 
@@ -295,6 +295,9 @@ class VoiceSession:
         self._emit({"type": "user_transcript", "text": text, "turn_id": turn_id})
         self.audio.mute_input(True)
         try:
+            dropped = drain_audio_queue(self.stream)
+            if dropped:
+                log.info("dropped %d stale TTS audio chunks before turn %d", dropped, turn_id)
             if voice:
                 set_voice(self.stream, voice)
             self._set_status("thinking")

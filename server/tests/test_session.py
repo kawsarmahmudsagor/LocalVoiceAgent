@@ -249,3 +249,11 @@ def test_stop_speaking_does_not_block_and_cuts_audio(gated_session, stream, audi
     t0 = time.monotonic(); gated_session.handle({"type": "stop_speaking"})
     assert time.monotonic() - t0 < 0.1 and audio.cuts == 1
     wait_for(lambda: stream.stopped)
+
+def test_turn_drops_audio_left_from_a_stopped_turn(session, stream, events):
+    # RealtimeTTS can leave synthesized audio of a stopped turn in engine.queue;
+    # it must not play at the start of the next turn.
+    import queue
+    stream.engine.queue = queue.Queue(); stream.engine.queue.put(b"stale")
+    session.handle({"type": "send_text", "text": "Hi"}); wait_for(lambda: events and events[-1].get("state") == "idle")
+    assert stream.engine.queue.empty()
