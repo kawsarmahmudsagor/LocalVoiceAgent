@@ -21,7 +21,7 @@ def exe(tmp_path):
     p = tmp_path / "llama-server.exe"; p.write_text(""); return p
 
 def make(exe, tmp_path, statuses=(200,), proc=None, port_busy=False, **env):
-    s = Settings.load(env={"LLAMA_SERVER_PATH": str(exe), **env}); clock = Clock(); seq = list(statuses)
+    s = Settings.load(env={"LLAMA_SERVER_PATH": str(exe), **env}, platform="win32"); clock = Clock(); seq = list(statuses)
     srv = LlamaServer(s, popen=lambda *a, **k: proc or FakeProc(), status=lambda url: seq.pop(0) if len(seq) > 1 else seq[0],
                       sleep=clock.sleep, clock=clock, port_check=lambda h, p: port_busy, log_path=tmp_path / "ls.log")
     return srv, clock
@@ -59,3 +59,37 @@ def test_close_terminates_then_kills(exe, tmp_path):
 
 def test_close_without_start_is_noop(exe, tmp_path):
     make(exe, tmp_path)[0].close()
+
+
+class FakePopen:
+    """Popen stand-in: writes `writes` to the stdout file it is given; poll() reports exit_code."""
+    def __init__(self, exit_code=None, writes=""): self.exit_code, self.writes, self.proc = exit_code, writes, None
+    def __call__(self, cmd, stdout=None, **kw):
+        if self.writes and stdout is not None: stdout.write(self.writes.encode()); stdout.flush()
+        self.proc = FakeProc(exit_code=self.exit_code); return self.proc
+
+def docker_settings(**env): return Settings.load(env={"LLAMA_RUNTIME": "docker", **env}, platform="linux")
+
+def test_docker_command(tmp_path):
+    srv = LlamaServer(docker_settings(), home=tmp_path)
+    cmd = srv.command()
+    assert cmd[:5] == ["docker", "run", "--rm", "--name", "voicebot-llama"] and "127.0.0.1:8081:8080" in cmd
+    assert f"{tmp_path}/.cache/llama.cpp:/root/.cache/llama.cpp" in cmd
+    assert cmd[cmd.index("-hf") + 1] == "unsloth/Qwen3.5-9B-GGUF:Q4_K_M" and "--no-mmproj" in cmd
+
+def test_stale_container_removed_before_run(tmp_path):                    # Review Focus 3
+    calls = []; fake_run = lambda c, **k: calls.append(c)
+    srv = LlamaServer(docker_settings(), run=fake_run, which=lambda n: "/usr/bin/docker",
+                      popen=FakePopen(), status=lambda u, **k: 200, log_path=tmp_path / "l.log", home=tmp_path)
+    srv.start(); assert calls[0] == ["docker", "rm", "-f", "voicebot-llama"]
+    srv.close(); assert ["docker", "stop", "-t", "5", "voicebot-llama"] in calls
+
+def test_missing_docker():
+    with pytest.raises(LlamaServerError, match="docker not found"):
+        LlamaServer(docker_settings(), which=lambda n: None).start()
+
+def test_sm120_hint(tmp_path):
+    log = tmp_path / "l.log"
+    srv = LlamaServer(docker_settings(), run=lambda c, **k: None, which=lambda n: "x", log_path=log, home=tmp_path,
+                      popen=FakePopen(exit_code=1, writes="CUDA error: no kernel image is available"), status=lambda u, **k: None)
+    with pytest.raises(LlamaServerError, match="build_llama_image.sh"): srv.start()
