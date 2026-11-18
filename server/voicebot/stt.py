@@ -96,7 +96,9 @@ def timing_callbacks(timer) -> dict[str, Callable]:
 
     return {
         "on_turn_detection_start": lambda: timer.mark("speech_end"),
-        "on_turn_detection_stop": lambda: timer.unmark("speech_end"),  # the user resumed speaking
+        # The user resumed speaking. RealtimeSTT also fires this right after it ends the
+        # utterance (after on_recording_stop); keep speech_end once the endpoint is marked.
+        "on_turn_detection_stop": lambda: None if timer.has("endpoint") else timer.unmark("speech_end"),
         "on_recording_stop": lambda: timer.mark("endpoint"),
         "on_transcription_start": on_transcription_start,
     }

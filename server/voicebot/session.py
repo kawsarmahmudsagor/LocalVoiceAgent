@@ -67,6 +67,7 @@ class VoiceSession:
         self._pending_voice: str | None = None
         self._status: str | None = None
         self._listening = False
+        self._listen_gen = 0  # bumped per listen run; stale runs exit without touching state
         self._listen_thread: threading.Thread | None = None
         self._threads: list[threading.Thread] = []
         self._stopper: threading.Thread | None = None  # in-flight stream.stop()
@@ -136,7 +137,10 @@ class VoiceSession:
         if self._listening:
             return
         self._listening = True
-        self._listen_thread = threading.Thread(target=self._listen_loop, name="listen", daemon=True)
+        self._listen_gen += 1
+        previous = self._listen_thread
+        self._listen_thread = threading.Thread(target=self._listen_loop, args=(self._listen_gen, previous),
+                                               name="listen", daemon=True)
         self._listen_thread.start()
 
     def _stop_listening(self, _cmd: dict) -> None:
@@ -236,9 +240,18 @@ class VoiceSession:
         self._threads = [x for x in self._threads if x.is_alive()] + [t]
         t.start()
 
-    def _listen_loop(self) -> None:
+    def _listen_loop(self, gen: int, previous: threading.Thread | None) -> None:
+        # A quick Mic off -> on can start this run while the previous one is still inside
+        # recorder.text() (its abort runs on a helper thread) or a turn. RealtimeSTT is not
+        # safe for two concurrent text() calls, so wait for it to finish first.
+        if previous is not None and previous is not threading.current_thread():
+            previous.join()
         recorder = self.audio.recorder
-        while self._listening:
+
+        def current() -> bool:
+            return self._listening and gen == self._listen_gen
+
+        while current():
             self._set_status("listening")
             try:
                 text = recorder.text()
@@ -246,7 +259,7 @@ class VoiceSession:
                 log.exception("STT failed")
                 self._error("stt_error", str(e))
                 break
-            if not self._listening:
+            if not current():
                 break
             if is_noise(text):
                 self.timer.reset()
@@ -254,7 +267,11 @@ class VoiceSession:
             with self._turn_lock:
                 self.timer.mark("stt_done")
                 self._run_turn(text.strip(), source="voice")
-        self._listening = False
+        if gen == self._listen_gen:  # an older run must not switch off a newer one
+            if self._listening:
+                self._listening = False
+                if not self._turn_lock.locked():
+                    self._set_status("idle")
 
     def _marked(self, chunks: Iterable[str]) -> Iterator[str]:
         """Mark llm_first_token on the first raw chunk and llm_done when the backend stream ends."""
@@ -366,10 +383,20 @@ class VoiceSession:
 
     def close(self) -> None:
         self._listening = False
-        try:
-            self.audio.recorder.abort()
-        except Exception:
-            log.exception("recorder.abort failed")
+        self._listen_gen += 1
+        # Abort only to wake a listen thread blocked in recorder.text(). RealtimeSTT's abort()
+        # waits forever when no text() is running and the recorder was left 'transcribing'
+        # (after any Mic on -> off), so never call it unguarded and never wait unbounded.
+        listener = self._listen_thread
+        if listener is not None and listener.is_alive():
+            def abort() -> None:
+                try:
+                    self.audio.recorder.abort()
+                except Exception:
+                    log.exception("recorder.abort failed")
+            aborter = threading.Thread(target=abort, name="stt-abort-close", daemon=True)
+            aborter.start()
+            aborter.join(timeout=2)
         self._stop_speaking({})
         for t in [self._listen_thread, self._stopper, *self._threads]:
             if t is not None and t is not threading.current_thread():

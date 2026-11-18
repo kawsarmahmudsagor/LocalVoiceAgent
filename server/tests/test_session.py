@@ -10,21 +10,36 @@ from voicebot.timing import TurnTimer
 # ---------- fakes ----------
 
 class FakeRecorder:
-    """text() pops the next transcript (firing on_stop first, like VAD ending the
-    utterance, then 'transcribing' for 20 ms), or blocks until abort()."""
+    """Like RealtimeSTT: text() returns the next transcript (firing on_stop first, like VAD
+    ending the utterance, then 'transcribing' for 20 ms) or waits until abort().
+    abort() wakes one waiting text(); with no text() running it blocks forever, like
+    RealtimeSTT's abort_recording() when the recorder was left in 'transcribing'."""
     def __init__(self):
         self.texts, self.aborted, self.on_stop = [], False, None
         self._abort = threading.Event()
+        self._lock = threading.Lock()
+        self.active = self.max_active = 0
+        self.hang_on_idle_abort = False
     def text(self):
-        if self.texts:
-            t = self.texts.pop(0)
-            if self.on_stop: self.on_stop()
-            time.sleep(0.02)
-            return t
-        self._abort.wait()
-        return ""
+        with self._lock:
+            self.active += 1; self.max_active = max(self.max_active, self.active)
+        try:
+            while True:
+                if self.texts:
+                    t = self.texts.pop(0)
+                    if self.on_stop: self.on_stop()
+                    time.sleep(0.02)
+                    return t
+                if self._abort.is_set():
+                    self._abort.clear(); return ""
+                time.sleep(0.005)
+        finally:
+            with self._lock: self.active -= 1
     def abort(self):
-        self.aborted = True; self._abort.set()
+        self.aborted = True
+        if self.hang_on_idle_abort and self.active == 0:
+            threading.Event().wait()          # never returns
+        self._abort.set()
 
 
 class FakeStream:
@@ -268,3 +283,17 @@ def test_stop_silences_player_immediately_before_stream_stop(gated_session, stre
     gated_session.handle({"type": "send_text", "text": "x"}); wait_for(lambda: "assistant_delta" in types(events))
     gated_session.handle({"type": "stop_speaking"}); wait_for(lambda: len(order) == 2)
     assert order == [("player", True), ("stream", None)]
+
+def test_quick_mic_toggle_keeps_one_listener(session, recorder, backend, events):     # review #4
+    session.handle({"type": "start_listening"}); wait_for(lambda: recorder.active == 1)
+    session.handle({"type": "stop_listening"}); session.handle({"type": "start_listening"})
+    time.sleep(0.2)
+    recorder.texts.append("What time is it?"); wait_for(lambda: backend.calls)
+    time.sleep(0.1)
+    assert recorder.max_active == 1 and session._listening is True
+
+def test_close_does_not_hang_on_idle_recorder_abort(session, recorder):                # review #3
+    session.handle({"type": "start_listening"}); wait_for(lambda: recorder.active == 1)
+    session.handle({"type": "stop_listening"}); wait_for(lambda: recorder.active == 0)
+    recorder.hang_on_idle_abort = True
+    t0 = time.monotonic(); session.close(); assert time.monotonic() - t0 < 3

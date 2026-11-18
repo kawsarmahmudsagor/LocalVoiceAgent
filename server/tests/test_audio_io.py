@@ -122,3 +122,11 @@ def test_realtimetts_shim_serializes_close_not_player_stop():
     tts.install_realtimetts_shims()
     assert getattr(AudioStream.close_stream, "_voicebot_serialized", False)
     assert not getattr(StreamPlayer.stop, "_voicebot_serialized", False)
+
+def test_timing_callbacks_keep_speech_end_through_real_endpoint_order():
+    # RealtimeSTT ends an utterance with: turn_detection_start -> recording_stop (stop())
+    # -> turn_detection_stop. The final turn_detection_stop must not erase speech_end.
+    from voicebot.timing import TurnTimer
+    tm = TurnTimer(); cb = stt.timing_callbacks(tm)
+    cb["on_turn_detection_start"](); cb["on_recording_stop"](); cb["on_turn_detection_stop"]()
+    assert tm.has("speech_end") and tm.has("endpoint")

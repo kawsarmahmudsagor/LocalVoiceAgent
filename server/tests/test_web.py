@@ -49,3 +49,26 @@ def test_disconnect_detaches_and_stops(ctx):                 # Review Focus 3
     client, fake = ctx
     with client.websocket_connect("/ws") as ws: ws.receive_json()
     assert fake.detached and {"type": "stop_listening"} in fake.handled and {"type": "stop_speaking"} in fake.handled
+
+def test_shutdown_always_closes_backend():                    # review #3: never orphan llama-server
+    import time
+    from voicebot.web import shutdown_resources
+    calls = []
+    def bad_close(): calls.append("session"); raise RuntimeError("boom")
+    class HangingRecorder:
+        def shutdown(self): calls.append("recorder"); threading.Event().wait()
+    class Backend:
+        def close(self): calls.append("backend")
+    t0 = time.monotonic()
+    shutdown_resources(bad_close, HangingRecorder(), Backend(), recorder_timeout=0.2)
+    assert calls == ["session", "recorder", "backend"] and time.monotonic() - t0 < 2
+
+def test_ws_rejects_cross_origin_pages(ctx):                  # review #5: other sites must not drive the bot
+    from starlette.websockets import WebSocketDisconnect
+    client, fake = ctx
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect("/ws", headers={"origin": "http://evil.example"}) as ws:
+            ws.receive_json()
+    assert fake.emit is None                                   # never attached
+    with client.websocket_connect("/ws", headers={"origin": "http://testserver"}) as ws:
+        assert ws.receive_json()["type"] == "config"           # same origin is fine

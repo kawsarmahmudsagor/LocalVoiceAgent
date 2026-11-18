@@ -7,8 +7,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from contextlib import asynccontextmanager
 from typing import Any, Callable
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
@@ -20,6 +22,17 @@ log = logging.getLogger(__name__)
 WEB_DIST = REPO_ROOT / "web" / "dist"
 TURNS_LOG = REPO_ROOT / "logs" / "turns.jsonl"
 CLOSE_TRY_AGAIN_LATER = 1013
+CLOSE_POLICY_VIOLATION = 1008
+
+
+def _same_origin(origin: str | None, host: str | None) -> bool:
+    """Allow non-browser clients (no Origin header) and pages served from this host.
+
+    The Vite dev proxy forwards the browser's Host (localhost:5173), so the dev UI passes too.
+    """
+    if not origin:
+        return True
+    return bool(host) and urlsplit(origin).netloc.lower() == host.lower()
 
 
 def build_session(settings: Settings):
@@ -57,16 +70,33 @@ def build_session(settings: Settings):
         voice=s.tts_voice, voices=list_voices(stream), info=info, timer=timer,
         metrics_sink=lambda record: append_jsonl(TURNS_LOG, record))
     _close_session = session.close
-
-    def close_all() -> None:
-        _close_session()
-        try:
-            audio.recorder.shutdown()
-        except Exception:
-            log.exception("recorder.shutdown failed")
-        backend.close()
-    session.close = close_all  # type: ignore[method-assign]
+    session.close = lambda: shutdown_resources(_close_session, audio.recorder, backend)  # type: ignore[method-assign]
     return session
+
+
+def shutdown_resources(close_session: Callable[[], None], recorder, backend, *,
+                       recorder_timeout: float = 10.0) -> None:
+    """Stop everything; the LLM backend (llama-server) is closed whatever else fails or hangs."""
+    try:
+        close_session()
+    except Exception:
+        log.exception("session.close failed")
+    try:
+        t = threading.Thread(target=_safe_call, args=(recorder.shutdown, "recorder.shutdown"),
+                             name="stt-shutdown", daemon=True)
+        t.start()
+        t.join(timeout=recorder_timeout)
+        if t.is_alive():
+            log.warning("recorder.shutdown did not finish within %.0fs; continuing", recorder_timeout)
+    finally:
+        backend.close()
+
+
+def _safe_call(fn: Callable[[], None], what: str) -> None:
+    try:
+        fn()
+    except Exception:
+        log.exception("%s failed", what)
 
 
 def create_app(settings: Settings | None = None, *,
@@ -93,6 +123,13 @@ def create_app(settings: Settings | None = None, *,
 
     @app.websocket("/ws")
     async def ws_endpoint(ws: WebSocket) -> None:
+        # Browsers do not apply CORS to WebSockets: without this check any page the user
+        # visits could connect, change settings and, in server audio mode, switch on the
+        # PC microphone and read the transcripts.
+        if not _same_origin(ws.headers.get("origin"), ws.headers.get("host")):
+            log.warning("rejected WebSocket from origin %r", ws.headers.get("origin"))
+            await ws.close(code=CLOSE_POLICY_VIOLATION)
+            return
         await ws.accept()
         session = state["session"]
         if state["connected"]:
