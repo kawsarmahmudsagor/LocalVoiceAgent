@@ -168,7 +168,7 @@ def test_make_tts_from_entry():
     e = by_slug(load_catalog(POOL))
     built = {}
     mod = NS(KokoroEngine=lambda **k: built.update(k) or "engine")
-    s = tts.make_tts(Settings.load(env={}), stream_cls=lambda eng: ("stream", eng), entry=e["kokoro"], module=mod)
+    s = tts.make_tts(Settings.load(env={}), stream_cls=lambda eng, **kw: ("stream", eng), entry=e["kokoro"], module=mod)
     assert s == ("stream", "engine") and built == {"voice": "af_heart", "trim_silence": False, "extra_end_ms": 200}
 
 def test_set_recorder_and_output_format():
@@ -189,10 +189,10 @@ def test_realtime_download_root_reaches_recorder():                       # fina
 def test_make_tts_kokoro_pacing_v1_and_entry():
     seen = []
     eng = lambda **k: seen.append(k) or "engine"
-    tts.make_tts(Settings.load(env={}), engine_cls=eng, stream_cls=lambda e: e)
+    tts.make_tts(Settings.load(env={}), engine_cls=eng, stream_cls=lambda e, **kw: e)
     assert seen[-1] == {"voice": "af_heart", "trim_silence": False, "extra_end_ms": 200}
     e = by_slug(load_catalog(POOL))
-    tts.make_tts(Settings.load(env={"KOKORO_TRIM_SILENCE": "true"}), stream_cls=lambda x: x, entry=e["kokoro"],
+    tts.make_tts(Settings.load(env={"KOKORO_TRIM_SILENCE": "true"}), stream_cls=lambda x, **kw: x, entry=e["kokoro"],
                  module=NS(KokoroEngine=eng))
     assert seen[-1] == {"voice": "af_heart", "trim_silence": True, "extra_end_ms": 200}
 
@@ -203,3 +203,14 @@ def test_play_forces_first_fragment_after_words():
     assert s.play_kw["force_first_fragment_after_words"] == 8
     b = make_audio_io(Settings.load(env={}), Stream(), recorder_factory=lambda st, **k: Rec())
     assert b.play_kwargs == {"force_first_fragment_after_words": 8}
+
+def test_browser_mode_stream_opens_no_output_device():                    # e2e: VM has no sound card
+    made = []
+    sc = lambda eng, **kw: made.append(kw) or eng
+    tts.make_tts(Settings.load(env={}), engine_cls=lambda **k: "e", stream_cls=sc)
+    assert made[-1] == {"muted": True}                  # browser mode: RealtimeTTS skips open_stream()
+    tts.make_tts(Settings.load(env={"AUDIO_IO": "server"}, platform="win32"), engine_cls=lambda **k: "e", stream_cls=sc)
+    assert made[-1] == {}                               # server mode plays on this PC's speakers
+    e = by_slug(load_catalog(POOL))
+    tts.make_tts(Settings.load(env={}), stream_cls=sc, entry=e["kokoro"], module=NS(KokoroEngine=lambda **k: "e"))
+    assert made[-1] == {"muted": True}

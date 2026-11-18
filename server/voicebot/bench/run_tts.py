@@ -75,7 +75,7 @@ def main(argv: list[str] | None = None) -> int:
     sentences = [l.strip() for l in args.sentences.read_text(encoding="utf-8").splitlines() if l.strip()]
     with GpuSampler() as gpu:
         engine = build_engine(entry)
-        stream = TextToAudioStream(engine)
+        stream = TextToAudioStream(engine, muted=True)  # no output device on the VM; chunks still arrive
         measure(stream, [WARMUP_TEXT])  # warm-up, excluded
         rows = measure(stream, sentences, out_dir=REPO_ROOT / "bench" / "out" / entry.slug)
     out = REPO_ROOT / "bench" / "results" / f"{entry.slug}.json"

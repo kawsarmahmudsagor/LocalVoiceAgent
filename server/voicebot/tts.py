@@ -43,6 +43,13 @@ def kokoro_pacing(settings: Settings) -> dict:
     return {"trim_silence": settings.kokoro_trim_silence, "extra_end_ms": settings.kokoro_extra_end_ms}
 
 
+def _stream_kwargs(settings: Settings) -> dict:
+    """Browser mode never plays on this machine. TextToAudioStream(muted=True) skips opening a PyAudio
+    output device (play(muted=True) alone still opens one, and fails on a VM without a sound card);
+    on_audio_chunk still receives every chunk."""
+    return {"muted": True} if settings.audio_io == "browser" else {}
+
+
 def make_tts(settings: Settings, *, engine_cls=None, stream_cls=None, entry=None, module=None):
     """Kokoro from settings (v1), or the engine a catalog entry names (v2 plan Task 12)."""
     if entry is not None and entry.engine == "KokoroEngine":
@@ -59,14 +66,14 @@ def make_tts(settings: Settings, *, engine_cls=None, stream_cls=None, entry=None
             install_realtimetts_shims()
         if stream_cls is None:
             from RealtimeTTS import TextToAudioStream as stream_cls
-        return stream_cls(build_engine(entry, root=REPO_ROOT, module=module))
+        return stream_cls(build_engine(entry, root=REPO_ROOT, module=module), **_stream_kwargs(settings))
     if engine_cls is None or stream_cls is None:
         from RealtimeTTS import KokoroEngine, TextToAudioStream
 
         install_realtimetts_shims()
         engine_cls = engine_cls or KokoroEngine
         stream_cls = stream_cls or TextToAudioStream
-    return stream_cls(engine_cls(voice=settings.tts_voice, **kokoro_pacing(settings)))
+    return stream_cls(engine_cls(voice=settings.tts_voice, **kokoro_pacing(settings)), **_stream_kwargs(settings))
 
 
 def warm_up(stream) -> None:

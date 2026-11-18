@@ -22,7 +22,7 @@ def main() -> int:
     engine = KokoroEngine(voice="af_heart")
     _, channels, rate = engine.get_stream_info()
     chunks: list[bytes] = []
-    stream = TextToAudioStream(engine)
+    stream = TextToAudioStream(engine, muted=True)  # no output device on the VM; chunks still arrive
     stream.feed(text)
     stream.play(muted=True, on_audio_chunk=chunks.append)
     with wave.open(str(OUT), "wb") as w:
