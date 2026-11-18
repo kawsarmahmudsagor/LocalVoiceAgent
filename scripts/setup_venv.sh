@@ -17,6 +17,11 @@ uv pip install --python .venv -e "RealtimeSTT[faster-whisper]" -e "RealtimeTTS[k
 # A dependency may have pulled in another torch build; put the CUDA one back.
 step "Re-assert CUDA torch"
 uv pip install --python .venv -r RealtimeSTT/requirements-gpu-torch.txt
+# RealtimeTTS's sentence splitter (stream2sentence) needs NLTK punkt_tab. Install it inside the venv:
+# NLTK refuses a group-writable ~/nltk_data, and a failed download leaves every turn silent.
+step "Install NLTK punkt_tab"
+mkdir -p .venv/nltk_data && chmod 755 .venv/nltk_data
+.venv/bin/python -c "import nltk, sys; sys.exit(0 if nltk.download('punkt_tab', download_dir='.venv/nltk_data', quiet=True) else 1)"
 step "Check CUDA"
 .venv/bin/python -c "import torch; assert torch.cuda.is_available(), 'CUDA torch not active'; print(torch.__version__, torch.cuda.get_device_name(0))"
 step "Enable gitleaks hooks"

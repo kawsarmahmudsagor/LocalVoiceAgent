@@ -383,3 +383,11 @@ def test_config_has_model_fields(session_with_models):
     c = session_with_models.config()
     assert (c["stt_final"], c["stt_realtime"], c["tts"], c["gpu_total_mb"], c["llm_vram_mb"]) == \
         ("whisper-small-en", "off", "kokoro", 32607, 7000)
+
+def test_tts_failure_reports_error_not_an_empty_turn(session, audio, events, sink):   # e2e: NLTK data missing
+    # RealtimeTTS fails on its own thread (e.g. stream2sentence cannot load NLTK data) and play()
+    # returns without ever reading the LLM stream. The user must see an error, and no metrics are logged.
+    audio.play = lambda stream, on_first_audio: None
+    session.handle({"type": "send_text", "text": "Hi"})
+    err = wait_for(lambda: next((e for e in events if e["type"] == "error"), None))
+    assert err["code"] == "tts_error" and sink == []

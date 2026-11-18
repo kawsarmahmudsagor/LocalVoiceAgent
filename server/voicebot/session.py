@@ -410,11 +410,13 @@ class VoiceSession:
             messages = self.conversation.messages(text)
         parts: list[str] = []
         errors: list[BaseException] = []
+        consumed: list[bool] = []  # set once TTS starts reading the LLM stream
         browser = self.audio.output_format is not None
 
         def tokens():
             # Exceptions are captured here, not raised: RealtimeTTS consumes this
             # iterator on its own thread, where a raise would be lost.
+            consumed.append(True)
             try:
                 for chunk in filter_stream(self._marked(self.backend.stream(messages, params, stop_event))):
                     if stop_event.is_set():
@@ -446,6 +448,13 @@ class VoiceSession:
             self._set_status("thinking")
             self.stream.feed(tokens())
             audio_seconds = self.audio.play(self.stream, on_first_audio)
+            if not consumed and not stop_event.is_set():
+                # RealtimeTTS failed on its own thread before reading the reply (it only prints the
+                # error there). Without this the turn would end silently as an empty reply.
+                log.error("turn %d: text-to-speech never read the LLM stream; see the RealtimeTTS error above", turn_id)
+                self._error("tts_error", "Text-to-speech failed before speaking; see the server log.")
+                self._emit({"type": "assistant_done", "text": "", "interrupted": False})
+                return
             if not errors:
                 self._wait_for_browser_playback(audio_seconds, stop_event)
             self.timer.mark("play_done")
