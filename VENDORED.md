@@ -23,4 +23,11 @@ List every local patch to vendored code here.
 
 ## Local patches
 
-None yet.
+No vendored file is edited. Two upstream issues are worked around from `server/voicebot/`:
+
+| Upstream issue | Workaround |
+|---|---|
+| RealtimeTTS `StreamPlayer.stop()` closes the PyAudio stream without a lock. Calling `TextToAudioStream.stop()` from another thread while a synchronous `play()` is cleaning up closes the stream twice and corrupts the heap (`Windows fatal exception: code 0xc0000374`). | `voicebot.tts.make_tts` wraps `StreamPlayer.stop` with a class-level lock at runtime (`serialize_method`). |
+| RealtimeSTT waits forever on `main_transcription_ready_event` if its transcription worker fails to load the model (for example, faster-whisper missing or cuBLAS not loadable), so startup hangs with no error. | `voicebot.stt.preflight` checks those causes first and fails with a fix hint; `voicebot.stt.expose_cuda_dlls` puts torch's CUDA 12 DLLs on the search path for CTranslate2. |
+
+Re-check both after updating the vendored copies.

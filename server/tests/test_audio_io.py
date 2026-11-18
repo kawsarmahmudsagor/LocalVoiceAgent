@@ -90,3 +90,18 @@ def test_browser_audio_cut_drops_later_chunks():
     a.play(CutMidway(), lambda: None)
     assert sent == [b"a"]                                   # audio after Stop never reaches the browser
     a.play(Stream(), lambda: None); assert sent == [b"a", b"a", b"b"]   # next play forwards again
+
+def test_serialize_method_prevents_overlap():
+    # RealtimeTTS StreamPlayer.stop() is not thread-safe: Stop (helper thread) and play()'s
+    # cleanup can close the same PyAudio stream together and corrupt the heap.
+    import threading, time
+    class Player:
+        active = 0; overlap = False
+        def stop(self, immediate=False):
+            Player.active += 1; Player.overlap |= Player.active > 1
+            time.sleep(0.05); Player.active -= 1
+            return immediate
+    tts.serialize_method(Player, "stop"); tts.serialize_method(Player, "stop")    # idempotent
+    p = Player(); ts = [threading.Thread(target=p.stop) for _ in range(3)]
+    [t.start() for t in ts]; [t.join() for t in ts]
+    assert not Player.overlap and p.stop(immediate=True) is True
