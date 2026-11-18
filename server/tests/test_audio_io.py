@@ -169,7 +169,7 @@ def test_make_tts_from_entry():
     built = {}
     mod = NS(KokoroEngine=lambda **k: built.update(k) or "engine")
     s = tts.make_tts(Settings.load(env={}), stream_cls=lambda eng: ("stream", eng), entry=e["kokoro"], module=mod)
-    assert s == ("stream", "engine") and built == {"voice": "af_heart"}
+    assert s == ("stream", "engine") and built == {"voice": "af_heart", "trim_silence": False, "extra_end_ms": 200}
 
 def test_set_recorder_and_output_format():
     a, r2 = BrowserAudio(Rec(), {"sample_rate": 24000, "channels": 1, "encoding": "pcm_s16le"}), Rec()
@@ -185,3 +185,21 @@ def test_realtime_download_root_reaches_recorder():                       # fina
     r = stt.make_recorder(Settings.load(env={}), use_microphone=False, recorder_cls=Rec, final=e["whisper-small-en"], realtime=rt)
     assert r.kw["download_root"] == str(REPO_ROOT / "models/sherpa-onnx")
     assert "download_root" not in r.kw["realtime_transcription_engine_options"]
+
+def test_make_tts_kokoro_pacing_v1_and_entry():
+    seen = []
+    eng = lambda **k: seen.append(k) or "engine"
+    tts.make_tts(Settings.load(env={}), engine_cls=eng, stream_cls=lambda e: e)
+    assert seen[-1] == {"voice": "af_heart", "trim_silence": False, "extra_end_ms": 200}
+    e = by_slug(load_catalog(POOL))
+    tts.make_tts(Settings.load(env={"KOKORO_TRIM_SILENCE": "true"}), stream_cls=lambda x: x, entry=e["kokoro"],
+                 module=NS(KokoroEngine=eng))
+    assert seen[-1] == {"voice": "af_heart", "trim_silence": True, "extra_end_ms": 200}
+
+def test_play_forces_first_fragment_after_words():
+    s = Stream(); a = BrowserAudio(Rec(), {"sample_rate": 24000, "channels": 1}, play_kwargs={"force_first_fragment_after_words": 8})
+    a.set_sink(lambda b: None); a.play(s, lambda: None); assert s.play_kw["force_first_fragment_after_words"] == 8
+    sa = ServerAudio(Rec(), play_kwargs={"force_first_fragment_after_words": 8}); sa.play(s, lambda: None)
+    assert s.play_kw["force_first_fragment_after_words"] == 8
+    b = make_audio_io(Settings.load(env={}), Stream(), recorder_factory=lambda st, **k: Rec())
+    assert b.play_kwargs == {"force_first_fragment_after_words": 8}

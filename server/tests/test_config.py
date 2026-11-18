@@ -50,3 +50,9 @@ def test_ssl_pair_required():
 def test_v2_settings_defaults():
     s = Settings.load(env={}, platform="linux")
     assert (s.stt_final, s.stt_realtime, s.tts_model, s.gpu_total_mb, s.llm_vram_mb) == ("whisper-small-en", "off", "kokoro", 32607, 7000)
+
+def test_tts_pacing_settings():
+    s = Settings.load(env={})
+    assert (s.kokoro_trim_silence, s.kokoro_extra_end_ms, s.tts_first_fragment_words) == (False, 200, 8)
+    s = Settings.load(env={"KOKORO_TRIM_SILENCE": "true", "KOKORO_EXTRA_END_MS": "150", "TTS_FIRST_FRAGMENT_WORDS": "30"})
+    assert (s.kokoro_trim_silence, s.kokoro_extra_end_ms, s.tts_first_fragment_words) == (True, 150, 30)

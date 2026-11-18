@@ -114,7 +114,8 @@ def append_jsonl(path: Path, record: dict) -> None:
 
 
 _CONTEXT_KEYS = ("llm_backend", "model_label", "audio_io", "stt_model", "stt_device", "voice",
-                 "temperature", "top_p", "max_tokens", "reply_chars")
+                 "temperature", "top_p", "max_tokens", "reply_chars",
+                 "kokoro_trim_silence", "kokoro_extra_end_ms", "tts_first_fragment_words")
 
 
 def fmt_ms(ms: int | None) -> str:

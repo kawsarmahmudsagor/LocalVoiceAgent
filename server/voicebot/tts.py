@@ -36,8 +36,19 @@ def install_realtimetts_shims() -> None:
     serialize_method(AudioStream, "close_stream")
 
 
+def kokoro_pacing(settings: Settings) -> dict:
+    """KokoroEngine trims the silence around every synthesized fragment by default, which removes the
+    pauses after commas and full stops (speech runs on "in one breath"). KOKORO_TRIM_SILENCE=false keeps
+    them; with trimming on, KOKORO_EXTRA_END_MS keeps a short pause at each fragment's end."""
+    return {"trim_silence": settings.kokoro_trim_silence, "extra_end_ms": settings.kokoro_extra_end_ms}
+
+
 def make_tts(settings: Settings, *, engine_cls=None, stream_cls=None, entry=None, module=None):
     """Kokoro from settings (v1), or the engine a catalog entry names (v2 plan Task 12)."""
+    if entry is not None and entry.engine == "KokoroEngine":
+        from dataclasses import replace
+
+        entry = replace(entry, options={**kokoro_pacing(settings), **entry.options})
     if entry is not None:
         from voicebot.config import REPO_ROOT
         from voicebot.tts_engines import build_engine
@@ -55,7 +66,7 @@ def make_tts(settings: Settings, *, engine_cls=None, stream_cls=None, entry=None
         install_realtimetts_shims()
         engine_cls = engine_cls or KokoroEngine
         stream_cls = stream_cls or TextToAudioStream
-    return stream_cls(engine_cls(voice=settings.tts_voice))
+    return stream_cls(engine_cls(voice=settings.tts_voice, **kokoro_pacing(settings)))
 
 
 def warm_up(stream) -> None:

@@ -54,7 +54,7 @@ def build_session(settings: Settings):
     """The real wiring: LLM backend, the catalog's STT recorder and TTS stream, timing callbacks."""
     from dataclasses import replace
 
-    from voicebot.audio_io import BrowserAudio, ServerAudio
+    from voicebot.audio_io import BrowserAudio, ServerAudio, play_kwargs
     from voicebot.bench.clips import clip_callbacks, merge_callbacks
     from voicebot.catalog import load_catalog
     from voicebot.conversation import Conversation
@@ -101,13 +101,17 @@ def build_session(settings: Settings):
             log.warning("%s; falling back to whisper-small-en / off / kokoro", e)
             models.settings = replace(s, stt_final="whisper-small-en", stt_realtime="off", tts_model="kokoro")
             recorder, stream = models.start(not browser, callbacks)
-        audio = BrowserAudio(recorder, output_format(stream)) if browser else ServerAudio(recorder)
+        pk = play_kwargs(s)
+        audio = BrowserAudio(recorder, output_format(stream), play_kwargs=pk) if browser else ServerAudio(recorder, play_kwargs=pk)
     except BaseException:
         backend.close()
         raise
     info = {"llm_backend": s.llm_backend, "audio_io": s.audio_io, "model_label": backend.model_label,
             "stt_model": s.stt_model, "stt_device": s.stt_device, "stt_compute_type": s.stt_compute_type,
-            "stt_silence_sec": s.stt_silence_sec}
+            "stt_silence_sec": s.stt_silence_sec,
+            # TTS pacing: logged per turn so latency_report --by can compare settings.
+            "kokoro_trim_silence": s.kokoro_trim_silence, "kokoro_extra_end_ms": s.kokoro_extra_end_ms,
+            "tts_first_fragment_words": s.tts_first_fragment_words}
     try:
         voices = list_voices(stream) or ["default"]
     except Exception:

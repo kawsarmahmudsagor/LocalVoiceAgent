@@ -39,9 +39,10 @@ def _once(fn: Callable[[], None]) -> Callable[[], None]:
 class BrowserAudio:
     """Mic PCM arrives over the WebSocket; TTS PCM is sent back over it."""
 
-    def __init__(self, recorder, output_format: dict) -> None:
+    def __init__(self, recorder, output_format: dict, *, play_kwargs: dict | None = None) -> None:
         self.recorder = recorder
         self.output_format = output_format
+        self.play_kwargs = dict(play_kwargs or {})  # extra TextToAudioStream.play() arguments
         self._muted = False
         self._sink: Callable[[bytes], None] | None = None
         self._lock = threading.Lock()
@@ -85,7 +86,7 @@ class BrowserAudio:
             sink(chunk)
             sent += len(chunk)
 
-        stream.play(on_audio_chunk=on_chunk, muted=True)
+        stream.play(on_audio_chunk=on_chunk, muted=True, **self.play_kwargs)
         rate = self.output_format.get("sample_rate", 24000)
         channels = self.output_format.get("channels", 1)
         return sent / (2 * channels * rate)  # s16le
@@ -96,8 +97,9 @@ class ServerAudio:
 
     output_format = None
 
-    def __init__(self, recorder) -> None:
+    def __init__(self, recorder, *, play_kwargs: dict | None = None) -> None:
         self.recorder = recorder
+        self.play_kwargs = dict(play_kwargs or {})
 
     def on_client_audio(self, data: bytes) -> None:
         pass
@@ -116,8 +118,14 @@ class ServerAudio:
 
     def play(self, stream, on_first_audio: Callable[[], None]) -> None:
         first = _once(on_first_audio)
-        stream.play(on_audio_chunk=lambda _chunk: first())
+        stream.play(on_audio_chunk=lambda _chunk: first(), **self.play_kwargs)
         return None  # play() returns after the speakers have played everything
+
+
+def play_kwargs(settings: Settings) -> dict:
+    """RealtimeTTS waits for a delimiter or force_first_fragment_after_words (default 30) before it
+    synthesizes the first fragment; a lower value starts speech sooner after a long opening sentence."""
+    return {"force_first_fragment_after_words": settings.tts_first_fragment_words}
 
 
 def make_audio_io(settings: Settings, stream, *, callbacks: dict | None = None,
@@ -125,5 +133,5 @@ def make_audio_io(settings: Settings, stream, *, callbacks: dict | None = None,
     browser = settings.audio_io == "browser"
     recorder = recorder_factory(settings, use_microphone=not browser, callbacks=callbacks)
     if browser:
-        return BrowserAudio(recorder, tts_output_format(stream))
-    return ServerAudio(recorder)
+        return BrowserAudio(recorder, tts_output_format(stream), play_kwargs=play_kwargs(settings))
+    return ServerAudio(recorder, play_kwargs=play_kwargs(settings))
