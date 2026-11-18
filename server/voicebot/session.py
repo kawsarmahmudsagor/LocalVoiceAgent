@@ -69,6 +69,7 @@ class VoiceSession:
         self._listening = False
         self._listen_thread: threading.Thread | None = None
         self._threads: list[threading.Thread] = []
+        self._stopper: threading.Thread | None = None  # in-flight stream.stop()
 
     # ---------- wiring ----------
 
@@ -153,10 +154,17 @@ class VoiceSession:
         if ev is None:
             return
         ev.set()
-        try:
-            self.stream.stop()
-        except Exception:
-            log.exception("stream.stop failed")
+        self.audio.cut()
+        # RealtimeTTS stream.stop() can block until synthesis winds down, and handle()
+        # runs on the web event loop, so stop the stream on a helper thread.
+
+        def stop_stream() -> None:
+            try:
+                self.stream.stop()
+            except Exception:
+                log.exception("stream.stop failed")
+        self._stopper = threading.Thread(target=stop_stream, name="tts-stop", daemon=True)
+        self._stopper.start()
 
     def _send_text(self, cmd: dict) -> None:
         text = cmd.get("text")
@@ -281,6 +289,9 @@ class VoiceSession:
                 self.timer.mark("playback_started")  # server mode: the PC speakers start now
             self._set_status("speaking")
 
+        stopper = self._stopper
+        if stopper is not None:
+            stopper.join(timeout=5)  # let the previous turn's stop finish before playing again
         self._emit({"type": "user_transcript", "text": text, "turn_id": turn_id})
         self.audio.mute_input(True)
         try:
@@ -348,6 +359,6 @@ class VoiceSession:
         except Exception:
             log.exception("recorder.abort failed")
         self._stop_speaking({})
-        for t in [self._listen_thread, *self._threads]:
+        for t in [self._listen_thread, self._stopper, *self._threads]:
             if t is not None and t is not threading.current_thread():
                 t.join(timeout=5)

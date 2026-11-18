@@ -56,3 +56,37 @@ def test_make_audio_io_selects_mode():
     assert isinstance(make_audio_io(Settings.load(env={"AUDIO_IO": "browser"}), Stream(), recorder_factory=f), BrowserAudio)
     assert isinstance(make_audio_io(Settings.load(env={"AUDIO_IO": "server"}), Stream(), recorder_factory=f), ServerAudio)
     assert calls == [False, True]
+
+def test_expose_cuda_dlls_prepends_torch_lib(tmp_path, monkeypatch):
+    # faster-whisper (CTranslate2) needs cuBLAS/cuDNN DLLs that ship inside torch\lib.
+    lib = tmp_path / "torch" / "lib"; lib.mkdir(parents=True)
+    monkeypatch.setenv("PATH", "C:\other")
+    added = []
+    stt.expose_cuda_dlls(torch_dir=tmp_path / "torch", add_dll_directory=added.append)
+    import os
+    assert os.environ["PATH"].split(os.pathsep)[0] == str(lib) and added == [str(lib)]
+    stt.expose_cuda_dlls(torch_dir=tmp_path / "torch", add_dll_directory=added.append)   # idempotent
+    assert os.environ["PATH"].split(os.pathsep).count(str(lib)) == 1
+
+def test_preflight_reports_missing_faster_whisper():
+    import pytest
+    def no_module(name): raise ImportError(name)
+    with pytest.raises(stt.STTError, match="faster-whisper"):
+        stt.preflight(Settings.load(env={}), import_module=no_module, load_dll=lambda n: None, windows=True)
+
+def test_preflight_reports_missing_cublas_and_skips_on_cpu():
+    import pytest
+    def no_dll(name): raise OSError(name)
+    with pytest.raises(stt.STTError, match="STT_DEVICE=cpu"):
+        stt.preflight(Settings.load(env={}), import_module=lambda n: None, load_dll=no_dll, windows=True)
+    stt.preflight(Settings.load(env={"STT_DEVICE": "cpu"}), import_module=lambda n: None, load_dll=no_dll, windows=True)
+
+def test_browser_audio_cut_drops_later_chunks():
+    r, sent = Rec(), []
+    a = BrowserAudio(r, {"sample_rate": 24000}); a.set_sink(sent.append)
+    class CutMidway(Stream):
+        def play(self, **kw):
+            kw["on_audio_chunk"](b"a"); a.cut(); kw["on_audio_chunk"](b"b")
+    a.play(CutMidway(), lambda: None)
+    assert sent == [b"a"]                                   # audio after Stop never reaches the browser
+    a.play(Stream(), lambda: None); assert sent == [b"a", b"a", b"b"]   # next play forwards again

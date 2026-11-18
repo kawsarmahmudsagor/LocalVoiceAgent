@@ -19,6 +19,8 @@ class AudioIO(Protocol):
     def mute_input(self, muted: bool) -> None: ...
     def set_sink(self, send_binary: Callable[[bytes], None] | None) -> None: ...
     def play(self, stream, on_first_audio: Callable[[], None]) -> None: ...
+    def cut(self) -> None:
+        """Stop pressed: drop any audio the current play() still produces."""
 
 
 def _once(fn: Callable[[], None]) -> Callable[[], None]:
@@ -41,6 +43,7 @@ class BrowserAudio:
         self._muted = False
         self._sink: Callable[[bytes], None] | None = None
         self._lock = threading.Lock()
+        self._generation = 0  # bumped by cut(); chunks from an older play() are dropped
 
     def on_client_audio(self, data: bytes) -> None:
         if not self._muted:
@@ -53,15 +56,22 @@ class BrowserAudio:
         with self._lock:
             self._sink = send_binary
 
+    def cut(self) -> None:
+        with self._lock:
+            self._generation += 1
+
     def play(self, stream, on_first_audio: Callable[[], None]) -> None:
         first = _once(on_first_audio)
+        with self._lock:
+            generation = self._generation
 
         def on_chunk(chunk: bytes) -> None:
-            first()
             with self._lock:
-                sink = self._sink
-            if sink is not None:
-                sink(chunk)
+                sink = self._sink if self._generation == generation else None
+            if sink is None:
+                return
+            first()
+            sink(chunk)
 
         stream.play(on_audio_chunk=on_chunk, muted=True)
 
@@ -82,6 +92,9 @@ class ServerAudio:
 
     def set_sink(self, send_binary: Callable[[bytes], None] | None) -> None:
         pass
+
+    def cut(self) -> None:
+        pass  # stream.stop() silences the PC speakers
 
     def play(self, stream, on_first_audio: Callable[[], None]) -> None:
         first = _once(on_first_audio)

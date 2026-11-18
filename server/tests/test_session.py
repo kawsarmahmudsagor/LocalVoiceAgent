@@ -36,13 +36,16 @@ class FakeStream:
         if isinstance(x, str): self.fed_text = x; x = iter([x])
         self.it, self.consumed, self.stopped = x, [], False
     def text(self): return "".join(self.consumed)
-    def stop(self): self.stopped = True
+    def stop(self):
+        self.stopped = True
+        time.sleep(getattr(self, "stop_delay", 0))
 
 
 class FakeAudio:
     output_format = {"sample_rate": 24000}
     def __init__(self): self.log, self.recorder, self.sink = [], None, None
     def mute_input(self, muted): self.log.append(f"mute:{muted}")
+    def cut(self): self.cuts = getattr(self, "cuts", 0) + 1
     def set_sink(self, s): self.sink = s
     def on_client_audio(self, data): pass
     def play(self, stream, on_first_audio):
@@ -238,3 +241,11 @@ def test_voice_turn_stage_spans_and_log_line(session_with_texts, events, caplog)
 def test_timer_reset_after_turn(session, events, timer):
     session.handle({"type": "send_text", "text": "Hi"}); wait_for(lambda: events and events[-1].get("state") == "idle")
     assert not timer.has("input") and not timer.has("play_done")
+
+def test_stop_speaking_does_not_block_and_cuts_audio(gated_session, stream, audio, events):
+    # RealtimeTTS stream.stop() can block for seconds; handle() runs on the web event loop.
+    stream.stop_delay = 0.5
+    gated_session.handle({"type": "send_text", "text": "x"}); wait_for(lambda: "assistant_delta" in types(events))
+    t0 = time.monotonic(); gated_session.handle({"type": "stop_speaking"})
+    assert time.monotonic() - t0 < 0.1 and audio.cuts == 1
+    wait_for(lambda: stream.stopped)

@@ -21,8 +21,8 @@ if (-not (Test-Path .venv\Scripts\python.exe)) {
     Invoke-Step "Create Python 3.12 venv" { uv venv -p 3.12 --clear .venv }
 }
 Invoke-Step "Install CUDA torch" { uv pip install --python .venv -r RealtimeSTT/requirements-gpu-torch.txt }
-Invoke-Step "Install RealtimeSTT, RealtimeTTS[kokoro], server" {
-    uv pip install --python .venv -e RealtimeSTT -e "RealtimeTTS[kokoro]" -e "server[dev,transformers]"
+Invoke-Step "Install RealtimeSTT[faster-whisper], RealtimeTTS[kokoro], server" {
+    uv pip install --python .venv -e "RealtimeSTT[faster-whisper]" -e "RealtimeTTS[kokoro]" -e "server[dev,transformers]"
 }
 # A dependency may have pulled in CPU torch; reinstall the CUDA build over it.
 Invoke-Step "Re-assert CUDA torch" { uv pip install --python .venv -r RealtimeSTT/requirements-gpu-torch.txt }
