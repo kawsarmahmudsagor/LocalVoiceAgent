@@ -1,0 +1,128 @@
+# Curated benchmark pool: v2 spec §3.1, plan Task 5. Schema: server/voicebot/catalog.py.
+# Option keys come from each engine's doc under RealtimeSTT/docs/engines/ and RealtimeTTS/docs/engines/.
+# Relative paths in options resolve against the repo root (the bench runners run from there).
+
+# ---------------- Final STT ----------------
+[[entry]]
+slug = "whisper-small-en"
+kind = "stt"
+role = "final"
+engine = "faster_whisper"
+model = "small.en"
+device = "cuda"
+family = "faster-whisper"
+options = { compute_type = "float16" }
+
+[[entry]]
+slug = "whisper-large-v3-turbo"
+kind = "stt"
+role = "final"
+engine = "faster_whisper"
+model = "large-v3-turbo"
+device = "cuda"
+family = "faster-whisper"
+options = { compute_type = "float16" }
+
+[[entry]]
+slug = "transcribe-cpp-parakeet-q4"
+kind = "stt"
+role = "final"
+engine = "transcribe_cpp"
+model = "models/transcribe-cpp/parakeet-tdt-0.6b-v3-Q4_K_M.gguf"
+device = "cuda"
+family = "transcribe-cpp"
+fetch = "manual:see RealtimeSTT/docs/engines/transcribe-cpp.md (download parakeet-tdt-0.6b-v3-Q4_K_M.gguf from handy-computer/parakeet-tdt-0.6b-v3-gguf into models/transcribe-cpp/)"
+options = { backend = "cuda" }
+
+[[entry]]
+slug = "sherpa-parakeet-v3"
+kind = "stt"
+role = "final"
+engine = "sherpa_onnx_parakeet"
+model = "nvidia/parakeet-tdt-0.6b-v3"
+device = "cpu"
+family = "sherpa"
+fetch = "sherpa:parakeet"
+options = { provider = "cpu", num_threads = 7, download_root = "models/sherpa-onnx" }
+
+# ---------------- Realtime STT ----------------
+[[entry]]
+slug = "nemotron-rt"
+kind = "stt"
+role = "realtime"
+engine = "sherpa_onnx_nemotron"
+model = "sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11"
+device = "cpu"
+family = "sherpa"
+fetch = "sherpa:nemotron"
+streaming = true
+options = { provider = "cpu", num_threads = 4 }
+
+[[entry]]
+slug = "kroko-en-128-rt"
+kind = "stt"
+role = "realtime"
+engine = "kroko_onnx"
+model = "Kroko-EN-Community-128-L-Streaming-001.data"
+device = "cpu"
+family = "kroko"
+fetch = "kroko:Kroko-EN-Community-128-L-Streaming-001.data"
+streaming = true
+
+[[entry]]
+slug = "whisper-tiny-en-rt"
+kind = "stt"
+role = "realtime"
+engine = "faster_whisper"
+model = "tiny.en"
+device = "cuda"
+family = "faster-whisper"
+options = { compute_type = "float16" }
+
+# ---------------- TTS ----------------
+[[entry]]
+slug = "kokoro"
+kind = "tts"
+engine = "KokoroEngine"
+model = "kokoro"
+device = "cuda"
+family = "kokoro"
+voice = "af_heart"
+
+[[entry]]
+slug = "qwen-cuda"
+kind = "tts"
+engine = "QwenEngine"
+model = "qwen-talker-0.6b-base-Q8_0"
+device = "cuda"
+family = "qwen"
+fetch = "manual:see RealtimeTTS/docs/engines/qwen.md (default Q8_0 talker and codec)"
+options = { reference_audio = "assets/ref_voice.wav", reference_text_file = "assets/ref_voice.txt" }
+
+[[entry]]
+slug = "inflect-cuda"
+kind = "tts"
+engine = "InflectEngine"
+model = "Inflect-Micro-v2"
+device = "cuda"
+family = "inflect"
+options = { backend = "pytorch", device = "cuda:0" }
+
+[[entry]]
+slug = "piper"
+kind = "tts"
+engine = "PiperEngine"
+model = "en_US-lessac-medium"
+device = "cpu"
+family = "piper"
+fetch = "piper:en_US-lessac-medium"
+options = { model_dir = "models/piper" }
+
+[[entry]]
+slug = "chatterbox"
+kind = "tts"
+engine = "ChatterboxEngine"
+model = "chatterbox-tts"
+device = "cuda"
+family = "chatterbox"
+options = { audio_prompt_path = "assets/ref_voice.wav", device = "cuda" }
