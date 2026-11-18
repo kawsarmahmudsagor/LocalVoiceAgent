@@ -12,6 +12,7 @@ class FakeSession:
     def config(self): return {"llm_backend": "llamacpp", "audio_io": "browser", "model_label": "m", "voices": ["af_heart"],
                               "output_format": None, "defaults": {}}
     def close(self): self.closed = True
+    def catalog(self): return [{"slug": "whisper-small-en"}, {"slug": "kokoro"}]
 
 @pytest.fixture
 def ctx():
@@ -27,6 +28,7 @@ def test_ws_config_commands_binary(ctx):
     client, fake = ctx
     with client.websocket_connect("/ws") as ws:
         assert ws.receive_json()["type"] == "config"
+        assert ws.receive_json()["type"] == "catalog"
         ws.send_json({"type": "send_text", "text": "hi"}); ws.send_bytes(b"\x00\x01"); ws.send_text("{bad")
         assert ws.receive_json()["code"] == "bad_command"
         assert {"type": "send_text", "text": "hi"} in fake.handled and fake.audio == [b"\x00\x01"]
@@ -34,7 +36,7 @@ def test_ws_config_commands_binary(ctx):
 def test_events_from_worker_thread(ctx):
     client, fake = ctx
     with client.websocket_connect("/ws") as ws:
-        ws.receive_json()
+        ws.receive_json(); ws.receive_json()   # config, catalog
         t = threading.Thread(target=lambda: (fake.emit({"type": "status", "state": "idle"}), fake.send_binary(b"pcm"))); t.start(); t.join()
         assert ws.receive_json() == {"type": "status", "state": "idle"} and ws.receive_bytes() == b"pcm"
 
@@ -80,3 +82,18 @@ def test_main_passes_ssl(monkeypatch):
     monkeypatch.setattr("voicebot.web.Settings.load", classmethod(lambda cls, **k: real_load(
         env={"WEB_SSL_CERTFILE": "c.pem", "WEB_SSL_KEYFILE": "k.pem"}, platform="linux")))
     web.main(); assert seen["ssl_certfile"].endswith("c.pem") and seen["ssl_keyfile"].endswith("k.pem")
+
+
+def test_catalog_after_config(ctx):
+    client, _ = ctx
+    assert client.get("/api/catalog").json()[0]["slug"] == "whisper-small-en"
+    with client.websocket_connect("/ws") as ws:
+        assert ws.receive_json()["type"] == "config" and ws.receive_json()["type"] == "catalog"
+
+def test_default_catalog_from_v1_settings():
+    from voicebot.web import default_catalog
+    e = {x.slug: x for x in default_catalog(Settings.load(env={"STT_MODEL": "base.en", "STT_DEVICE": "cpu"}))}
+    assert set(e) == {"whisper-small-en", "kokoro"}
+    assert (e["whisper-small-en"].model, e["whisper-small-en"].device, e["whisper-small-en"].options) == \
+        ("base.en", "cpu", {"compute_type": "int8"})
+    assert e["kokoro"].voice == "af_heart"
