@@ -36,7 +36,19 @@ def install_realtimetts_shims() -> None:
     serialize_method(AudioStream, "close_stream")
 
 
-def make_tts(settings: Settings, *, engine_cls=None, stream_cls=None):
+def make_tts(settings: Settings, *, engine_cls=None, stream_cls=None, entry=None, module=None):
+    """Kokoro from settings (v1), or the engine a catalog entry names (v2 plan Task 12)."""
+    if entry is not None:
+        from voicebot.config import REPO_ROOT
+        from voicebot.tts_engines import build_engine
+
+        if module is None:
+            import RealtimeTTS as module
+
+            install_realtimetts_shims()
+        if stream_cls is None:
+            from RealtimeTTS import TextToAudioStream as stream_cls
+        return stream_cls(build_engine(entry, root=REPO_ROOT, module=module))
     if engine_cls is None or stream_cls is None:
         from RealtimeTTS import KokoroEngine, TextToAudioStream
 

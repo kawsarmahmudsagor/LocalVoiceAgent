@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from typing import Callable
 
-from voicebot.config import Settings
+from voicebot.config import REPO_ROOT, Settings
 
 
 def _torch_dir() -> Path | None:
@@ -48,12 +48,14 @@ def _load_dll(name: str) -> None:
 
 
 def preflight(settings: Settings, *, import_module=importlib.import_module, load_dll=_load_dll,
-              windows: bool = sys.platform == "win32") -> None:
+              windows: bool = sys.platform == "win32", engine: str = "faster_whisper") -> None:
     """Check what the STT worker needs before starting it.
 
     RealtimeSTT loads the model in a child process, and if that fails the parent
     waits forever, so startup would hang with no message. Catch the known causes here.
     """
+    if engine != "faster_whisper":
+        return  # other engines report their own import errors when the recorder builds them
     try:
         import_module("faster_whisper")
     except ImportError as e:
@@ -68,18 +70,46 @@ def preflight(settings: Settings, *, import_module=importlib.import_module, load
                            "or set STT_DEVICE=cpu") from None
 
 
+def _repo_path(value: str) -> str:
+    """Catalog paths under models/ or assets/ are relative to the repo root."""
+    return str(REPO_ROOT / value) if value.startswith(("models/", "assets/")) else value
+
+
+def entry_kwargs(final, realtime=None) -> dict:
+    """Recorder kwargs for catalog entries (v2 spec §4.3). See plan Task 12."""
+    opts = dict(final.options)
+    kw: dict = dict(transcription_engine=final.engine, model=_repo_path(final.model), device=final.device)
+    if "compute_type" in opts:
+        kw["compute_type"] = opts["compute_type"]
+    if "download_root" in opts:  # a recorder argument, not an engine option (sherpa-onnx.md)
+        kw["download_root"] = _repo_path(opts.pop("download_root"))
+    kw["transcription_engine_options"] = opts
+    if realtime is not None:
+        kw.update(enable_realtime_transcription=True, realtime_transcription_engine=realtime.engine,
+                  realtime_model_type=_repo_path(realtime.model),
+                  realtime_transcription_engine_options=dict(realtime.options))
+    else:
+        kw["enable_realtime_transcription"] = False
+    return kw
+
+
 def make_recorder(settings: Settings, *, use_microphone: bool, callbacks: dict[str, Callable] | None = None,
-                  recorder_cls=None):
+                  recorder_cls=None, final=None, realtime=None):
+    device = final.device if final is not None else settings.stt_device
     if recorder_cls is None:
-        if sys.platform == "win32" and settings.stt_device == "cuda":
+        if sys.platform == "win32" and device == "cuda":
             expose_cuda_dlls()
-        preflight(settings)
+        preflight(settings, engine=final.engine if final is not None else "faster_whisper")
         from RealtimeSTT import AudioToTextRecorder
         recorder_cls = AudioToTextRecorder
-    kwargs = dict(model=settings.stt_model, language="en", device=settings.stt_device,
-                  compute_type=settings.stt_compute_type, use_microphone=use_microphone,
-                  post_speech_silence_duration=settings.stt_silence_sec, spinner=False,
-                  enable_realtime_transcription=False)
+    if final is None:
+        kwargs = dict(model=settings.stt_model, language="en", device=settings.stt_device,
+                      compute_type=settings.stt_compute_type, use_microphone=use_microphone,
+                      post_speech_silence_duration=settings.stt_silence_sec, spinner=False,
+                      enable_realtime_transcription=False)
+    else:
+        kwargs = dict(entry_kwargs(final, realtime), language="en", use_microphone=use_microphone,
+                      post_speech_silence_duration=settings.stt_silence_sec, spinner=False)
     kwargs.update(callbacks or {})
     return recorder_cls(**kwargs)
 

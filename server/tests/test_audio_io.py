@@ -139,3 +139,33 @@ def test_browser_audio_play_returns_seconds_sent():
             for _ in range(4): kw["on_audio_chunk"](b"\x00" * 12000)   # 4 x 6000 samples
     assert a.play(OneSecond(), lambda: None) == 1.0
     a.set_sink(None); assert a.play(OneSecond(), lambda: None) == 0.0  # nothing reached a browser
+
+from voicebot.config import REPO_ROOT
+from voicebot.catalog import by_slug, load_catalog
+POOL = REPO_ROOT / "bench" / "pool.toml"
+
+def test_make_recorder_from_entries():
+    e = by_slug(load_catalog(POOL))
+    r = stt.make_recorder(Settings.load(env={}), use_microphone=False, recorder_cls=Rec, final=e["sherpa-parakeet-v3"], realtime=e["nemotron-rt"])
+    assert r.kw["transcription_engine"] == "sherpa_onnx_parakeet" and "compute_type" not in r.kw
+    assert r.kw["enable_realtime_transcription"] is True and r.kw["realtime_transcription_engine"] == "sherpa_onnx_nemotron"
+
+def test_make_recorder_v1_path_unchanged():
+    r = stt.make_recorder(Settings.load(env={}), use_microphone=False, recorder_cls=Rec)
+    assert r.kw["model"] == "small.en" and r.kw["enable_realtime_transcription"] is False
+
+def test_make_recorder_entry_paths_and_compute_type():
+    e = by_slug(load_catalog(POOL))
+    r = stt.make_recorder(Settings.load(env={}), use_microphone=False, recorder_cls=Rec, final=e["whisper-small-en"])
+    assert r.kw["compute_type"] == "float16" and r.kw["model"] == "small.en"
+    r = stt.make_recorder(Settings.load(env={}), use_microphone=False, recorder_cls=Rec, final=e["sherpa-parakeet-v3"])
+    assert r.kw["download_root"] == str(REPO_ROOT / "models/sherpa-onnx") and "download_root" not in r.kw["transcription_engine_options"]
+    r = stt.make_recorder(Settings.load(env={}), use_microphone=False, recorder_cls=Rec, final=e["transcribe-cpp-parakeet-q4"])
+    assert r.kw["model"] == str(REPO_ROOT / "models/transcribe-cpp/parakeet-tdt-0.6b-v3-Q4_K_M.gguf")
+
+def test_make_tts_from_entry():
+    e = by_slug(load_catalog(POOL))
+    built = {}
+    mod = NS(KokoroEngine=lambda **k: built.update(k) or "engine")
+    s = tts.make_tts(Settings.load(env={}), stream_cls=lambda eng: ("stream", eng), entry=e["kokoro"], module=mod)
+    assert s == ("stream", "engine") and built == {"voice": "af_heart"}

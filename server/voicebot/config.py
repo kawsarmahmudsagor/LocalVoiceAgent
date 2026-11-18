@@ -72,6 +72,11 @@ class Settings:
     web_ssl_certfile: Path | None = None
     web_ssl_keyfile: Path | None = None
     clip_record_dir: Path | None = None
+    stt_final: str = "whisper-small-en"
+    stt_realtime: str = "off"
+    tts_model: str = "kokoro"
+    gpu_total_mb: int = 32607
+    llm_vram_mb: int = 7000
 
     @classmethod
     def load(cls, env: Mapping[str, str] | None = None, env_file: Path | None = None, *,
@@ -144,4 +149,9 @@ class Settings:
             web_ssl_certfile=certfile,
             web_ssl_keyfile=keyfile,
             clip_record_dir=path_or_none("CLIP_RECORD_DIR"),
+            stt_final=get("STT_FINAL", "whisper-small-en"),
+            stt_realtime=get("STT_REALTIME", "off"),
+            tts_model=get("TTS_MODEL", "kokoro"),
+            gpu_total_mb=get("GPU_TOTAL_MB", "32607", int),
+            llm_vram_mb=get("LLM_VRAM_MB", "7000", int),
         )

@@ -46,3 +46,7 @@ def test_ssl_pair_required():
         Settings.load(env={"WEB_SSL_CERTFILE": "certs/cert.pem"}, platform="linux")
     s = Settings.load(env={"WEB_SSL_CERTFILE": "certs/cert.pem", "WEB_SSL_KEYFILE": "certs/key.pem"}, platform="linux")
     assert s.web_ssl_certfile.name == "cert.pem" and s.web_ssl_certfile.is_absolute()
+
+def test_v2_settings_defaults():
+    s = Settings.load(env={}, platform="linux")
+    assert (s.stt_final, s.stt_realtime, s.tts_model, s.gpu_total_mb, s.llm_vram_mb) == ("whisper-small-en", "off", "kokoro", 32607, 7000)
