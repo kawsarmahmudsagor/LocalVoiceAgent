@@ -71,6 +71,7 @@ class Settings:
     llama_image: str = "ghcr.io/ggml-org/llama.cpp:server-cuda"
     web_ssl_certfile: Path | None = None
     web_ssl_keyfile: Path | None = None
+    clip_record_dir: Path | None = None
 
     @classmethod
     def load(cls, env: Mapping[str, str] | None = None, env_file: Path | None = None, *,
@@ -142,4 +143,5 @@ class Settings:
             llama_image=get("LLAMA_IMAGE", "ghcr.io/ggml-org/llama.cpp:server-cuda"),
             web_ssl_certfile=certfile,
             web_ssl_keyfile=keyfile,
+            clip_record_dir=path_or_none("CLIP_RECORD_DIR"),
         )

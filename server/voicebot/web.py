@@ -57,7 +57,12 @@ def build_session(settings: Settings):
         warm_up(stream)
         timer = TurnTimer()
         log.info("loading STT model %s on %s (audio mode: %s)", s.stt_model, s.stt_device, s.audio_io)
-        audio = make_audio_io(s, stream, callbacks=timing_callbacks(timer))
+        callbacks = timing_callbacks(timer)
+        if s.clip_record_dir is not None:
+            from voicebot.bench.clips import clip_callbacks, merge_callbacks
+            log.info("recording benchmark clips to %s", s.clip_record_dir)
+            callbacks = merge_callbacks(callbacks, clip_callbacks(s.clip_record_dir))
+        audio = make_audio_io(s, stream, callbacks=callbacks)
     except BaseException:
         backend.close()
         raise
