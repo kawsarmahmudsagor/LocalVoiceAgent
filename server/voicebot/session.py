@@ -1,4 +1,4 @@
-"""VoiceSession: the listen/turn loop. See spec §4.7.
+"""VoiceSession: the listen/turn loop. See spec §4.7 and plan Task 9 / Task 7b.
 
 Threads:
 - handle() is called from the web server's event loop and never blocks on
@@ -6,30 +6,33 @@ Threads:
 - The listen loop runs on its own thread; typed turns run on a short-lived one.
 - One turn at a time, guarded by _turn_lock.
 
-Per-turn timing marks (logged and sent in the metrics event):
-  silence_end  VAD ended the utterance (RealtimeSTT on_recording_stop)
-  stt_done     recorder.text() returned the transcript
-  first_token  first filtered LLM text
-  first_audio  first TTS audio chunk
+Timing: a TurnTimer (Task 7b) collects stage marks. The recorder's callbacks
+mark speech_end / endpoint / stt_start while listening; this module marks
+stt_done, input, llm_first_token, first_text, llm_done, tts_first_audio,
+playback_started and play_done. Each turn emits a metrics event, logs one
+"turn timing" line and passes a record to metrics_sink (logs/turns.jsonl).
 """
 from __future__ import annotations
 
 import logging
 import string
 import threading
-import time
 from dataclasses import replace
-from typing import Callable
+from datetime import datetime, timezone
+from typing import Callable, Iterable, Iterator
 
 from voicebot.conversation import Conversation
 from voicebot.llm.base import GenerationParams, LLMError
 from voicebot.speech_filter import filter_stream
+from voicebot.timing import TurnTimer
 from voicebot.tts import set_voice
 
 log = logging.getLogger(__name__)
 
 APOLOGY = "Sorry, something went wrong."
 _STRIP_PUNCT = str.maketrans("", "", string.punctuation)
+_LOG_SPANS = ("silence_wait_ms", "stt_ms", "llm_ttft_ms", "filter_ms", "tts_first_audio_ms",
+              "playback_ms", "perceived_ms", "total_ms")
 
 
 def is_noise(text: str) -> bool:
@@ -40,31 +43,32 @@ def is_noise(text: str) -> bool:
     return t.lower().translate(_STRIP_PUNCT).strip() == "you"
 
 
-def _ms(a: float | None, b: float | None) -> int | None:
-    return None if a is None or b is None else round((b - a) * 1000)
-
-
 def _is_number(v) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
 class VoiceSession:
     def __init__(self, *, backend, audio, stream, conversation: Conversation, params: GenerationParams,
-                 voice: str, voices: list[str], info: dict, clock: Callable[[], float] = time.perf_counter) -> None:
+                 voice: str, voices: list[str], info: dict, timer: TurnTimer | None = None,
+                 metrics_sink: Callable[[dict], None] | None = None, ack_timeout: float = 1.0) -> None:
         self.backend, self.audio, self.stream, self.conversation = backend, audio, stream, conversation
         self.params, self.voice, self.voices, self.info = params, voice, list(voices), dict(info)
-        self.clock = clock
+        self.timer = timer if timer is not None else TurnTimer()
+        self.metrics_sink = metrics_sink
+        self.ack_timeout = ack_timeout
         self._emit_fn: Callable[[dict], None] | None = None
         self._emit_lock = threading.Lock()
-        self._state_lock = threading.Lock()   # params, voice, system prompt, current stop_event
+        self._state_lock = threading.Lock()   # params, voice, system prompt, current turn
         self._turn_lock = threading.Lock()    # one turn at a time
         self._stop_event: threading.Event | None = None
+        self._turn_id = 0
+        self._current_turn: int | None = None
+        self._ack = threading.Event()
         self._pending_voice: str | None = None
         self._status: str | None = None
         self._listening = False
         self._listen_thread: threading.Thread | None = None
         self._threads: list[threading.Thread] = []
-        self._silence_end: float | None = None
 
     # ---------- wiring ----------
 
@@ -99,10 +103,6 @@ class VoiceSession:
     def _error(self, code: str, message: str) -> None:
         self._emit({"type": "error", "code": code, "message": message})
 
-    def mark_silence_end(self) -> None:
-        """RealtimeSTT on_recording_stop callback: VAD has ended the utterance."""
-        self._silence_end = self.clock()
-
     def on_client_audio(self, data: bytes) -> None:
         self.audio.on_client_audio(data)
 
@@ -124,6 +124,7 @@ class VoiceSession:
             "send_text": self._send_text,
             "update_settings": self._update_settings,
             "clear": self._clear,
+            "playback_started": self._playback_started,
         }.get(kind)  # type: ignore[arg-type]
         if handler is None:
             self._error("bad_command", f"unknown command type {kind!r}")
@@ -165,14 +166,23 @@ class VoiceSession:
         if not self._turn_lock.acquire(blocking=False):
             self._error("busy", "A reply is already in progress. Press Stop first.")
             return
-        started = self.clock()
+        self.timer.reset()
+        self.timer.mark("input")
 
         def run() -> None:
             try:
-                self._run_turn(text, start=started)
+                self._run_turn(text, source="text")
             finally:
                 self._turn_lock.release()
         self._spawn(run, "typed-turn")
+
+    def _playback_started(self, cmd: dict) -> None:
+        with self._state_lock:
+            current = self._current_turn
+        if current is None or cmd.get("turn_id") != current:
+            return  # late ack or an old turn: ignore silently
+        self.timer.mark("playback_started")
+        self._ack.set()
 
     def _update_settings(self, cmd: dict) -> None:
         bad = []
@@ -213,43 +223,52 @@ class VoiceSession:
         recorder = self.audio.recorder
         while self._listening:
             self._set_status("listening")
-            self._silence_end = None
             try:
                 text = recorder.text()
             except Exception as e:
                 log.exception("STT failed")
                 self._error("stt_error", str(e))
                 break
-            stt_done = self.clock()
             if not self._listening:
                 break
             if is_noise(text):
+                self.timer.reset()
                 continue
             with self._turn_lock:
-                self._run_turn(text.strip(), start=stt_done, silence_end=self._silence_end, stt_done=stt_done)
+                self.timer.mark("stt_done")
+                self._run_turn(text.strip(), source="voice")
         self._listening = False
 
-    def _run_turn(self, text: str, *, start: float, silence_end: float | None = None,
-                  stt_done: float | None = None) -> None:
+    def _marked(self, chunks: Iterable[str]) -> Iterator[str]:
+        """Mark llm_first_token on the first raw chunk and llm_done when the backend stream ends."""
+        for chunk in chunks:
+            self.timer.mark("llm_first_token")
+            yield chunk
+        self.timer.mark("llm_done")
+
+    def _run_turn(self, text: str, *, source: str) -> None:
         stop_event = threading.Event()
         with self._state_lock:
+            self._turn_id += 1
+            turn_id = self._turn_id
+            self._current_turn = turn_id
             self._stop_event = stop_event
+            self._ack.clear()
             params = self.params
             voice, self._pending_voice = self._pending_voice, None
             messages = self.conversation.messages(text)
-        marks: dict[str, float | None] = {"first_token": None, "first_audio": None}
         parts: list[str] = []
         errors: list[BaseException] = []
+        browser = self.audio.output_format is not None
 
         def tokens():
             # Exceptions are captured here, not raised: RealtimeTTS consumes this
             # iterator on its own thread, where a raise would be lost.
             try:
-                for chunk in filter_stream(self.backend.stream(messages, params, stop_event)):
+                for chunk in filter_stream(self._marked(self.backend.stream(messages, params, stop_event))):
                     if stop_event.is_set():
                         break
-                    if marks["first_token"] is None:
-                        marks["first_token"] = self.clock()
+                    self.timer.mark("first_text")
                     parts.append(chunk)
                     self._emit({"type": "assistant_delta", "text": chunk})
                     yield chunk
@@ -257,11 +276,12 @@ class VoiceSession:
                 errors.append(e)
 
         def on_first_audio() -> None:
-            if marks["first_audio"] is None:
-                marks["first_audio"] = self.clock()
+            self.timer.mark("tts_first_audio")
+            if not browser:
+                self.timer.mark("playback_started")  # server mode: the PC speakers start now
             self._set_status("speaking")
 
-        self._emit({"type": "user_transcript", "text": text})
+        self._emit({"type": "user_transcript", "text": text, "turn_id": turn_id})
         self.audio.mute_input(True)
         try:
             if voice:
@@ -269,14 +289,14 @@ class VoiceSession:
             self._set_status("thinking")
             self.stream.feed(tokens())
             self.audio.play(self.stream, on_first_audio)
-            end = self.clock()
+            self.timer.mark("play_done")
 
             if errors:
                 e = errors[0]
-                if not isinstance(e, LLMError):
-                    log.error("unexpected error during turn", exc_info=e)
+                if isinstance(e, LLMError):
+                    log.error("LLM error during turn %d: %s", turn_id, e)
                 else:
-                    log.error("LLM error during turn: %s", e)
+                    log.error("unexpected error during turn %d", turn_id, exc_info=e)
                 self._error("llm_error", str(e))
                 self.stream.feed(APOLOGY)
                 self.audio.play(self.stream, lambda: self._set_status("speaking"))
@@ -288,35 +308,38 @@ class VoiceSession:
             if reply:
                 self.conversation.add_exchange(text, reply)
             self._emit({"type": "assistant_done", "text": reply, "interrupted": interrupted})
-            metrics = {
-                "type": "metrics",
-                "stt_ms": _ms(silence_end, stt_done),
-                "ttft_ms": _ms(start, marks["first_token"]),
-                "first_audio_ms": _ms(start, marks["first_audio"]),
-                "total_ms": _ms(start, end),
-                "speech_to_audio_ms": _ms(silence_end, marks["first_audio"]),
-            }
-            self._emit(metrics)
-            self._log_timing(start, silence_end, stt_done, marks, end, interrupted)
+            if browser and self.timer.has("tts_first_audio") and not self.timer.has("playback_started"):
+                self._ack.wait(self.ack_timeout)
+            self._finish_metrics(turn_id, source, interrupted, params, len(reply))
         except Exception as e:
-            log.exception("turn failed")
+            log.exception("turn %d failed", turn_id)
             self._error("llm_error", str(e))
         finally:
             with self._state_lock:
                 self._stop_event = None
+                self._current_turn = None
+            self.timer.reset()
             self.audio.mute_input(False)
             self._set_status("listening" if self._listening else "idle")
 
-    def _log_timing(self, start, silence_end, stt_done, marks, end, interrupted) -> None:
-        origin = silence_end if silence_end is not None else start
-        since = "silence end" if silence_end is not None else "typed send"
-
-        def rel(t):
-            v = _ms(origin, t)
-            return "-" if v is None else f"+{v}"
-        log.info("turn timing (ms since %s): silence_end=%s stt_done=%s first_token=%s first_audio=%s done=%s%s",
-                 since, rel(silence_end), rel(stt_done), rel(marks["first_token"]), rel(marks["first_audio"]),
-                 rel(end), " (interrupted)" if interrupted else "")
+    def _finish_metrics(self, turn_id: int, source: str, interrupted: bool, params: GenerationParams,
+                        reply_chars: int) -> None:
+        report = self.timer.report()
+        metrics = {"type": "metrics", "turn_id": turn_id, "source": source, "interrupted": interrupted, **report}
+        self._emit(metrics)
+        spans = report["spans"]
+        log.info("turn timing #%d (%s%s): %s", turn_id, source, ", interrupted" if interrupted else "",
+                 " ".join(f"{k}={'-' if spans[k] is None else spans[k]}" for k in _LOG_SPANS))
+        if self.metrics_sink is None:
+            return
+        record = {k: v for k, v in metrics.items() if k != "type"}
+        record.update(ts=datetime.now(timezone.utc).isoformat(timespec="milliseconds"), **self.info,
+                      voice=self.voice, temperature=params.temperature, top_p=params.top_p,
+                      max_tokens=params.max_tokens, reply_chars=reply_chars)
+        try:
+            self.metrics_sink(record)
+        except Exception:
+            log.exception("metrics_sink failed")
 
     def close(self) -> None:
         self._listening = False
@@ -325,7 +348,6 @@ class VoiceSession:
         except Exception:
             log.exception("recorder.abort failed")
         self._stop_speaking({})
-        threads = [self._listen_thread, *self._threads]
-        for t in threads:
+        for t in [self._listen_thread, *self._threads]:
             if t is not None and t is not threading.current_thread():
                 t.join(timeout=5)

@@ -4,6 +4,7 @@ import pytest
 from voicebot.conversation import Conversation
 from voicebot.llm.base import GenerationParams, LLMError
 from voicebot.session import APOLOGY, VoiceSession, is_noise
+from voicebot.timing import TurnTimer
 
 
 # ---------- fakes ----------
@@ -39,7 +40,7 @@ class FakeStream:
 
 
 class FakeAudio:
-    output_format = None
+    output_format = {"sample_rate": 24000}
     def __init__(self): self.log, self.recorder, self.sink = [], None, None
     def mute_input(self, muted): self.log.append(f"mute:{muted}")
     def set_sink(self, s): self.sink = s
@@ -94,34 +95,43 @@ def audio(): return FakeAudio()
 def recorder(): return FakeRecorder()
 @pytest.fixture
 def backend(): return FakeBackend()
+@pytest.fixture
+def timer(): return TurnTimer()
+@pytest.fixture
+def sink(): return []
 
-def _make(backend, audio, stream, conv, recorder, events):
-    audio.recorder = recorder
-    s = VoiceSession(backend=backend, audio=audio, stream=stream, conversation=conv,
-                     params=GenerationParams(0.7, 0.8, 256), voice="af_heart", voices=["af_heart", "am_adam"],
-                     info={"llm_backend": "llamacpp", "audio_io": "browser", "model_label": "fake-model"})
-    recorder.on_stop = s.mark_silence_end
-    s.attach(events.append, lambda b: None)
-    return s
+INFO = {"llm_backend": "llamacpp", "audio_io": "browser", "model_label": "fake-model",
+        "stt_model": "small.en", "stt_device": "cuda", "stt_compute_type": "int8", "stt_silence_sec": 0.6}
 
 @pytest.fixture
-def session(backend, audio, stream, conv, recorder, events):
-    s = _make(backend, audio, stream, conv, recorder, events); yield s; s.close()
+def make(backend, audio, stream, conv, recorder, events, timer, sink):
+    made = []
+    def _make():
+        audio.recorder = recorder
+        # The real recorder marks these through stt.timing_callbacks (Task 8).
+        recorder.on_stop = lambda: (timer.mark("speech_end"), timer.mark("endpoint"), timer.mark("stt_start"))
+        s = VoiceSession(backend=backend, audio=audio, stream=stream, conversation=conv,
+                         params=GenerationParams(0.7, 0.8, 256), voice="af_heart", voices=["af_heart", "am_adam"],
+                         info=INFO, timer=timer, metrics_sink=sink.append, ack_timeout=0.05)
+        s.attach(events.append, lambda b: None); made.append(s); return s
+    yield _make
+    if backend.gate is not None: backend.gate.set()
+    for s in made: s.close()
 
 @pytest.fixture
-def session_with_texts(request, backend, audio, stream, conv, recorder, events):
-    recorder.texts = list(request.node.get_closest_marker("texts").args[0])
-    s = _make(backend, audio, stream, conv, recorder, events); yield s; s.close()
+def session(make): return make()
 
 @pytest.fixture
-def gated_session(backend, audio, stream, conv, recorder, events):
-    backend.gate = threading.Event()
-    s = _make(backend, audio, stream, conv, recorder, events); yield s; backend.gate.set(); s.close()
+def session_with_texts(request, make, recorder):
+    recorder.texts = list(request.node.get_closest_marker("texts").args[0]); return make()
 
 @pytest.fixture
-def failing_session(backend, audio, stream, conv, recorder, events):
-    backend.error = LLMError("down")
-    s = _make(backend, audio, stream, conv, recorder, events); yield s; s.close()
+def gated_session(make, backend):
+    backend.gate = threading.Event(); return make()
+
+@pytest.fixture
+def failing_session(make, backend):
+    backend.error = LLMError("down"); return make()
 
 
 # ---------- tests ----------
@@ -138,7 +148,20 @@ def test_typed_turn_event_order_and_history(session, events, conv):
     done = next(e for e in events if e["type"] == "assistant_done")
     assert done == {"type": "assistant_done", "text": "Hello there.", "interrupted": False}
     assert conv.turns == [("Hi", "Hello there.")]
-    m = next(e for e in events if e["type"] == "metrics"); assert m["total_ms"] >= 0 and m["ttft_ms"] is not None
+    m = next(e for e in events if e["type"] == "metrics")
+    assert m["source"] == "text" and m["turn_id"] == events[0]["turn_id"] == 1 and m["interrupted"] is False
+    assert m["spans"]["total_ms"] >= 0 and m["spans"]["llm_ttft_ms"] is not None and m["spans"]["stt_ms"] is None
+
+@pytest.mark.texts(["What time is it?"])
+def test_voice_turn_metrics_and_sink(session_with_texts, sink, events):     # sink fixture: list.append
+    session_with_texts.handle({"type": "start_listening"}); wait_for(lambda: sink)
+    assert sink[0]["source"] == "voice" and sink[0]["marks"]["stt_done"] is not None
+    assert sink[0]["stt_model"] == "small.en" and "ts" in sink[0] and "type" not in sink[0]
+
+def test_playback_ack_only_for_current_turn(gated_session, events, timer):   # Review Focus 6
+    gated_session.handle({"type": "send_text", "text": "x"}); wait_for(lambda: "user_transcript" in types(events))
+    gated_session.handle({"type": "playback_started", "turn_id": 99}); assert not timer.has("playback_started")
+    gated_session.handle({"type": "playback_started", "turn_id": events[0]["turn_id"]}); assert timer.has("playback_started")
 
 def test_mute_before_play_unmute_after(session, audio):
     session.handle({"type": "send_text", "text": "Hi"}); wait_for(lambda: "mute:False" in audio.log)
@@ -201,17 +224,17 @@ def test_unknown_command_and_clear(session, events, conv):
 # Per-stage timing (user request): silence end, STT done, LLM first token, TTS first audio.
 
 @pytest.mark.texts(["What time is it?"])
-def test_voice_turn_stage_timings(session_with_texts, events, caplog):
+def test_voice_turn_stage_spans_and_log_line(session_with_texts, events, caplog):
     caplog.set_level(logging.INFO, logger="voicebot.session")
     session_with_texts.handle({"type": "start_listening"})
     m = wait_for(lambda: next((e for e in events if e["type"] == "metrics"), None))
-    assert m["stt_ms"] >= 15                                  # FakeRecorder transcribes for 20 ms after silence end
-    assert m["ttft_ms"] is not None and m["first_audio_ms"] >= m["ttft_ms"]
-    assert m["speech_to_audio_ms"] >= m["stt_ms"] + m["first_audio_ms"] - 1
+    sp = m["spans"]
+    assert sp["stt_ms"] >= 15                     # FakeRecorder transcribes for 20 ms after endpoint
+    assert sp["llm_ttft_ms"] is not None and sp["tts_first_audio_ms"] is not None and sp["perceived_ms"] >= sp["stt_ms"]
+    assert m["marks"]["speech_end"] == 0 and sp["playback_ms"] is None        # no browser ack within ack_timeout
     line = wait_for(lambda: next((r.getMessage() for r in caplog.records if "turn timing" in r.getMessage()), None))
-    for stage in ("silence_end", "stt_done", "first_token", "first_audio"): assert stage in line
+    for span in ("silence_wait_ms", "stt_ms", "llm_ttft_ms", "tts_first_audio_ms", "perceived_ms"): assert span in line
 
-def test_typed_turn_has_no_stt_timings(session, events):
-    session.handle({"type": "send_text", "text": "Hi"})
-    m = wait_for(lambda: next((e for e in events if e["type"] == "metrics"), None))
-    assert m["stt_ms"] is None and m["speech_to_audio_ms"] is None and m["first_audio_ms"] is not None
+def test_timer_reset_after_turn(session, events, timer):
+    session.handle({"type": "send_text", "text": "Hi"}); wait_for(lambda: events and events[-1].get("state") == "idle")
+    assert not timer.has("input") and not timer.has("play_done")
