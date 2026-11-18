@@ -1,0 +1,629 @@
+import json
+import queue
+import threading
+import unittest
+from unittest import mock
+
+import numpy as np
+
+from example_fastapi_server.protocol import (
+    AudioPacketError,
+    decode_audio_packet,
+    encode_audio_packet,
+    normalize_engine_name,
+    parse_json_object,
+    require_positive_int,
+)
+from RealtimeSTT.audio_recorder import AudioToTextRecorder
+from RealtimeSTT.transcription_engines import (
+    TranscriptionResult,
+    get_supported_transcription_engines,
+)
+from example_fastapi_server.server import (
+    ConnectionManager,
+    FairInferenceQueue,
+    InferenceJob,
+    RealtimeSTTService,
+    SegmentState,
+    ServerSettings,
+    SharedEngineWorker,
+    set_current_thread_cpu_affinity,
+    parse_args,
+    settings_from_args,
+)
+
+
+class FastAPIServerProtocolTests(unittest.TestCase):
+    def test_audio_packet_round_trip(self):
+        metadata = {
+            "sampleRate": 48000,
+            "channels": 1,
+            "format": "pcm_s16le",
+            "frames": 4,
+        }
+        audio = b"\x01\x00\x02\x00"
+
+        packet = decode_audio_packet(encode_audio_packet(metadata, audio))
+
+        self.assertEqual(packet.metadata, metadata)
+        self.assertEqual(packet.audio, audio)
+
+    def test_decode_rejects_invalid_packets(self):
+        with self.assertRaisesRegex(AudioPacketError, "missing metadata length"):
+            decode_audio_packet(b"\x00\x01")
+
+        with self.assertRaisesRegex(AudioPacketError, "incomplete"):
+            decode_audio_packet(b"\x10\x00\x00\x00{}")
+
+        with self.assertRaisesRegex(AudioPacketError, "invalid JSON"):
+            decode_audio_packet(b"\x01\x00\x00\x00{")
+
+    def test_require_positive_int(self):
+        self.assertEqual(require_positive_int({"sampleRate": 16000}, "sampleRate"), 16000)
+
+        for value in (0, -1, "16000", True, None):
+            with self.subTest(value=value):
+                with self.assertRaises(AudioPacketError):
+                    require_positive_int({"sampleRate": value}, "sampleRate")
+
+    def test_json_object_parser(self):
+        self.assertEqual(parse_json_object('{"a": 1}', "--flag"), {"a": 1})
+        self.assertIsNone(parse_json_object(None, "--flag"))
+
+        with self.assertRaisesRegex(ValueError, "JSON object"):
+            parse_json_object("[1, 2]", "--flag")
+
+        with self.assertRaisesRegex(ValueError, "valid JSON"):
+            parse_json_object("{", "--flag")
+
+    def test_settings_normalize_hyphenated_engine_names(self):
+        args = parse_args([
+            "--engine",
+            "cohere-transcribe",
+            "--realtime-engine",
+            "moonshine-streaming",
+            "--engine-options",
+            json.dumps({"language": "en"}),
+        ])
+
+        settings = settings_from_args(args)
+
+        self.assertEqual(settings.transcription_engine, "cohere_transcribe")
+        self.assertEqual(settings.realtime_transcription_engine, "moonshine_streaming")
+        self.assertEqual(settings.transcription_engine_options, {"language": "en"})
+
+    def test_parakeet_tuning_profile_sets_latency_oriented_defaults(self):
+        args = parse_args([
+            "--profile",
+            "parakeet-low-latency",
+            "--engine",
+            "parakeet",
+        ])
+
+        settings = settings_from_args(args)
+
+        self.assertEqual(settings.tuning_profile, "parakeet-low-latency")
+        self.assertEqual(settings.batch_size, 1)
+        self.assertEqual(settings.realtime_batch_size, 1)
+        self.assertEqual(settings.realtime_processing_pause, 0.04)
+        self.assertEqual(settings.post_speech_silence_duration, 0.45)
+
+    def test_explicit_tuning_flags_override_profile_defaults(self):
+        args = parse_args([
+            "--profile",
+            "parakeet-low-latency",
+            "--batch-size",
+            "4",
+            "--realtime-processing-pause",
+            "0.09",
+        ])
+
+        settings = settings_from_args(args)
+
+        self.assertEqual(settings.batch_size, 4)
+        self.assertEqual(settings.realtime_processing_pause, 0.09)
+
+    def test_normalize_engine_name_handles_none(self):
+        self.assertIsNone(normalize_engine_name(None))
+        self.assertEqual(normalize_engine_name("Qwen3-ASR"), "qwen3_asr")
+
+    def test_supported_engines_include_kroko_for_fastapi_config(self):
+        engines = get_supported_transcription_engines()
+
+        for name in ("kroko_onnx", "kroko", "banafo_kroko"):
+            self.assertIn(name, engines)
+
+    def test_segment_ids_replace_realtime_with_final(self):
+        state = SegmentState()
+
+        self.assertEqual(state.realtime(), 1)
+        self.assertEqual(state.realtime(), 1)
+        self.assertEqual(state.final(), 1)
+        self.assertEqual(state.realtime(), 2)
+        self.assertEqual(state.final(), 2)
+
+    def test_public_settings_hide_backend_option_payloads(self):
+        settings = ServerSettings(
+            transcription_engine_options={"token": "secret"},
+            realtime_transcription_engine_options={"other": "secret"},
+        )
+
+        public = settings.public_dict()
+
+        self.assertNotIn("transcription_engine_options", public)
+        self.assertNotIn("realtime_transcription_engine_options", public)
+        self.assertEqual(public["transcription_engine"], "faster_whisper")
+
+    def test_new_multi_user_settings_parse_from_cli(self):
+        args = parse_args([
+            "--max-sessions",
+            "12",
+            "--max-active-speakers",
+            "3",
+            "--max-realtime-queue-age-ms",
+            "900",
+            "--max-final-queue-depth-per-session",
+            "2",
+            "--max-global-inference-queue-depth",
+            "17",
+            "--use-main-model-for-realtime",
+            "--no-model-warmup",
+        ])
+
+        settings = settings_from_args(args)
+
+        self.assertEqual(settings.max_sessions, 12)
+        self.assertEqual(settings.max_active_speakers, 3)
+        self.assertEqual(settings.max_realtime_queue_age_ms, 900)
+        self.assertEqual(settings.max_final_queue_depth_per_session, 2)
+        self.assertEqual(settings.max_global_inference_queue_depth, 17)
+        self.assertTrue(settings.use_main_model_for_realtime)
+        self.assertFalse(settings.model_warmup)
+
+    def test_optional_cpu_affinity_masks_parse_and_normalize(self):
+        args = parse_args([
+            "--main-cpu-affinity",
+            "0-2,2,6",
+            "--realtime-cpu-affinity",
+            "10",
+            "--ultrafast-realtime-cpu-affinity",
+            "12,14",
+        ])
+
+        settings = settings_from_args(args)
+
+        self.assertEqual(settings.main_cpu_affinity, (0, 1, 2, 6))
+        self.assertEqual(settings.realtime_cpu_affinity, (10,))
+        self.assertEqual(settings.ultrafast_realtime_cpu_affinity, (12, 14))
+
+    def test_worker_applies_affinity_before_native_engine_creation(self):
+        events = []
+
+        def make_engine():
+            events.append(("factory", set_affinity.call_count))
+            return object()
+
+        settings = ServerSettings(
+            model_warmup=False,
+            realtime_cpu_affinity=(4, 6),
+        )
+        realtime_queue = FairInferenceQueue("realtime", settings)
+        realtime_queue.close()
+        worker = SharedEngineWorker(
+            "realtime",
+            settings,
+            realtime_queue,
+            make_engine,
+            lambda result: None,
+        )
+
+        with (
+            mock.patch(
+                "example_fastapi_server.server.os.sched_setaffinity",
+                create=True,
+            ) as set_affinity,
+            mock.patch(
+                "example_fastapi_server.server.threading.get_native_id",
+                return_value=321,
+            ),
+        ):
+            worker._worker()
+
+        set_affinity.assert_called_once_with(321, {4, 6})
+        self.assertEqual(events, [("factory", 1)])
+
+    def test_worker_cancels_active_job_and_reuses_engine(self):
+        class CancelableEngine:
+            def __init__(self):
+                self.entered = threading.Event()
+                self.cancelled = threading.Event()
+                self.calls = 0
+
+            def transcribe(self, audio, language=None, use_prompt=True):
+                del audio, language, use_prompt
+                self.calls += 1
+                self.cancelled.clear()
+                self.entered.set()
+                if self.calls == 1:
+                    if not self.cancelled.wait(1.0):
+                        raise AssertionError("active inference was not cancelled")
+                    raise RuntimeError("native inference aborted")
+                return TranscriptionResult(text="fresh result")
+
+            def cancel_active(self):
+                self.cancelled.set()
+                return True
+
+        settings = ServerSettings(model_warmup=False)
+        inference_queue = FairInferenceQueue("main", settings)
+        engine = CancelableEngine()
+        results = []
+        result_ready = threading.Event()
+
+        def receive(result):
+            results.append(result)
+            result_ready.set()
+
+        worker = SharedEngineWorker(
+            "main",
+            settings,
+            inference_queue,
+            lambda: engine,
+            receive,
+        )
+        worker.start()
+        try:
+            self.assertTrue(worker.ready.wait(0.5))
+            old = self._job("same", "final", segment_id=1)
+            self.assertTrue(inference_queue.submit(old).accepted)
+            self.assertTrue(engine.entered.wait(0.5))
+
+            self.assertTrue(worker.cancel_request(old.request_id))
+            self.assertTrue(result_ready.wait(0.5))
+            self.assertEqual(results[0].request_id, old.request_id)
+            self.assertEqual(results[0].error, "cancelled")
+            self.assertEqual(results[0].metadata, {"cancelled": True})
+            self.assertEqual(worker.cancelled_jobs, 1)
+            self.assertEqual(worker.failed_jobs, 0)
+
+            result_ready.clear()
+            engine.entered.clear()
+            fresh = self._job("same", "final", segment_id=2)
+            self.assertTrue(inference_queue.submit(fresh).accepted)
+            self.assertTrue(result_ready.wait(0.5))
+            self.assertEqual(results[1].request_id, fresh.request_id)
+            self.assertEqual(results[1].text, "fresh result")
+            self.assertIsNone(results[1].error)
+            self.assertEqual(worker.completed_jobs, 1)
+            self.assertEqual(engine.calls, 2)
+        finally:
+            worker.stop()
+
+    def test_worker_cancel_before_native_start_skips_inference(self):
+        class ObservedEngine:
+            def __init__(self):
+                self.transcribe_calls = 0
+                self.cancel_calls = 0
+
+            def transcribe(self, audio, language=None, use_prompt=True):
+                del audio, language, use_prompt
+                self.transcribe_calls += 1
+                return TranscriptionResult(text="must not run")
+
+            def cancel_active(self):
+                self.cancel_calls += 1
+                return True
+
+        settings = ServerSettings(model_warmup=False)
+        inference_queue = FairInferenceQueue("main", settings)
+        engine = ObservedEngine()
+        results = []
+        result_ready = threading.Event()
+
+        def receive(result):
+            results.append(result)
+            result_ready.set()
+
+        worker = SharedEngineWorker(
+            "main",
+            settings,
+            inference_queue,
+            lambda: engine,
+            receive,
+        )
+        worker.start()
+        self.assertTrue(worker.ready.wait(0.5))
+        worker.engine_lock.acquire()
+        try:
+            job = self._job("same", "final", segment_id=3)
+            self.assertTrue(inference_queue.submit(job).accepted)
+            deadline = time_now_plus(0.5)
+            while time_now_plus(0) < deadline:
+                with worker._active_job_lock:
+                    if worker._active_request_id == job.request_id:
+                        break
+                threading.Event().wait(0.001)
+            else:
+                self.fail("worker did not claim the queued job")
+
+            self.assertTrue(worker.cancel_request(job.request_id))
+        finally:
+            worker.engine_lock.release()
+
+        try:
+            self.assertTrue(result_ready.wait(0.5))
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0].request_id, job.request_id)
+            self.assertEqual(results[0].error, "cancelled")
+            self.assertEqual(engine.transcribe_calls, 0)
+            self.assertEqual(engine.cancel_calls, 0)
+            self.assertEqual(worker.cancelled_jobs, 1)
+        finally:
+            worker.stop()
+
+    def test_cpu_affinity_helper_is_noop_without_a_configured_mask(self):
+        with mock.patch("example_fastapi_server.server.os.sched_setaffinity", create=True) as set_affinity:
+            set_current_thread_cpu_affinity("main", None)
+        set_affinity.assert_not_called()
+
+    def test_wake_word_settings_parse_from_cli(self):
+        args = parse_args([
+            "--wakeword-backend",
+            "pvporcupine",
+            "--wake-words",
+            "jarvis",
+            "--wake-words-sensitivity",
+            "0.7",
+            "--wake-word-timeout",
+            "3.25",
+            "--wake-word-buffer-duration",
+            "0.2",
+            "--wake-word-followup-window",
+            "5",
+        ])
+
+        settings = settings_from_args(args)
+
+        self.assertTrue(settings.wake_word_enabled())
+        self.assertEqual(settings.wakeword_backend, "pvporcupine")
+        self.assertEqual(settings.wake_words, "jarvis")
+        self.assertEqual(settings.wake_words_sensitivity, 0.7)
+        self.assertEqual(settings.wake_word_timeout, 3.25)
+        self.assertEqual(settings.wake_word_buffer_duration, 0.2)
+        self.assertEqual(settings.wake_word_followup_window, 5.0)
+        self.assertTrue(settings.public_dict()["wake_word_enabled"])
+
+    def test_runtime_settings_update_distinguishes_safe_and_startup_only_fields(self):
+        service = RealtimeSTTService(ServerSettings(max_sessions=1), ConnectionManager())
+
+        result = service.update_settings({
+            "max_sessions": 3,
+            "wake_words": "jarvis",
+            "transcription_engine": "moonshine",
+            "unknown_setting": 1,
+        })
+
+        self.assertEqual(service.settings.max_sessions, 3)
+        self.assertEqual(service.settings.wake_words, "jarvis")
+        self.assertEqual(result["applied"]["max_sessions"]["appliesTo"], "active_sessions")
+        self.assertEqual(result["applied"]["wake_words"]["appliesTo"], "new_sessions")
+        self.assertEqual(result["rejected"]["transcription_engine"]["reason"], "startup_only")
+        self.assertEqual(result["rejected"]["unknown_setting"]["reason"], "unknown")
+
+    def test_packet_to_server_samples_accepts_valid_pcm_packet(self):
+        service = RealtimeSTTService(ServerSettings(audio_queue_size=1), ConnectionManager())
+        packet = decode_audio_packet(encode_audio_packet(
+            {"sampleRate": 48000, "channels": 1, "format": "pcm_s16le"},
+            b"\x01\x00\x02\x00",
+        ))
+
+        samples = service.packet_to_server_samples(packet)
+
+        self.assertEqual(samples.dtype.name, "int16")
+        self.assertGreaterEqual(samples.size, 1)
+
+    def test_packet_to_server_samples_rejects_bad_pcm_shape(self):
+        service = RealtimeSTTService(ServerSettings(), ConnectionManager())
+
+        invalid_packets = [
+            ({"sampleRate": 48000, "channels": 1, "format": "float32"}, b"\x00\x00"),
+            ({"sampleRate": 48000, "channels": 9, "format": "pcm_s16le"}, b"\x00\x00"),
+            ({"sampleRate": 48000, "channels": 2, "format": "pcm_s16le"}, b"\x00\x00"),
+        ]
+
+        for metadata, audio in invalid_packets:
+            with self.subTest(metadata=metadata, audio=audio):
+                packet = decode_audio_packet(encode_audio_packet(metadata, audio))
+                with self.assertRaises(AudioPacketError):
+                    service.packet_to_server_samples(packet)
+
+    def test_packet_to_server_samples_rejects_frame_count_mismatch(self):
+        service = RealtimeSTTService(ServerSettings(), ConnectionManager())
+        packet = decode_audio_packet(encode_audio_packet(
+            {"sampleRate": 16000, "channels": 1, "format": "pcm_s16le", "frames": 3},
+            np.zeros(2, dtype=np.int16).tobytes(),
+        ))
+
+        with self.assertRaisesRegex(AudioPacketError, "frames"):
+            service.packet_to_server_samples(packet)
+
+    def test_fair_queue_coalesces_realtime_but_preserves_finals(self):
+        settings = ServerSettings(max_global_inference_queue_depth=8)
+        dropped = []
+        queue = FairInferenceQueue("test", settings, lambda job, reason, lane: dropped.append((job, reason)))
+
+        first_realtime = self._job("a", "realtime", sequence=1)
+        second_realtime = self._job("a", "realtime", sequence=2)
+        final = self._job("a", "final", segment_id=1)
+
+        self.assertTrue(queue.submit(first_realtime).accepted)
+        coalesced = queue.submit(second_realtime)
+        self.assertTrue(coalesced.accepted)
+        self.assertTrue(coalesced.coalesced)
+        self.assertTrue(queue.submit(final).accepted)
+
+        first_job = queue.get()
+        second_job = queue.get()
+
+        self.assertEqual(first_job.kind, "final")
+        self.assertEqual(second_job.kind, "realtime")
+        self.assertEqual(second_job.sequence, 2)
+        self.assertEqual([(job.sequence, reason) for job, reason in dropped], [(1, "coalesced")])
+
+    def test_fair_queue_round_robins_between_sessions(self):
+        queue = FairInferenceQueue("test", ServerSettings(), None)
+        self.assertTrue(queue.submit(self._job("a", "final")).accepted)
+        self.assertTrue(queue.submit(self._job("a", "final", segment_id=2)).accepted)
+        self.assertTrue(queue.submit(self._job("b", "final")).accepted)
+
+        first = queue.get()
+        second = queue.get()
+        third = queue.get()
+
+        self.assertEqual(first.session_id, "a")
+        self.assertEqual(second.session_id, "b")
+        self.assertEqual(third.session_id, "a")
+
+    def test_fair_queue_drops_stale_realtime_jobs(self):
+        dropped = []
+        queue = FairInferenceQueue("test", ServerSettings(), lambda job, reason, lane: dropped.append((job, reason)))
+        stale = self._job("a", "realtime", deadline_at=0.001)
+        fresh = self._job("b", "realtime", deadline_at=time_now_plus(5))
+
+        self.assertTrue(queue.submit(stale).accepted)
+        self.assertTrue(queue.submit(fresh).accepted)
+
+        self.assertEqual(queue.get().session_id, "b")
+        self.assertEqual([(job.session_id, reason) for job, reason in dropped], [("a", "stale")])
+
+    def test_fair_queue_drops_stale_final_jobs(self):
+        dropped = []
+        inference_queue = FairInferenceQueue(
+            "test",
+            ServerSettings(),
+            lambda job, reason, lane: dropped.append((job, reason, lane)),
+        )
+        stale = self._job("a", "final", deadline_at=0.001)
+        fresh = self._job("b", "final", deadline_at=time_now_plus(5))
+
+        self.assertTrue(inference_queue.submit(stale).accepted)
+        self.assertTrue(inference_queue.submit(fresh).accepted)
+
+        self.assertEqual(inference_queue.get().session_id, "b")
+        self.assertEqual(
+            [(job.session_id, reason, lane) for job, reason, lane in dropped],
+            [("a", "stale", "test")],
+        )
+        self.assertEqual(inference_queue.snapshot()["staleFinalDropped"], 1)
+
+    def test_cancel_request_preserves_newer_same_session_final(self):
+        dropped = []
+        inference_queue = FairInferenceQueue(
+            "test",
+            ServerSettings(),
+            lambda job, reason, lane: dropped.append((job, reason, lane)),
+        )
+        old = self._job("same", "final", segment_id=1)
+        new = self._job("same", "final", segment_id=2)
+        self.assertTrue(inference_queue.submit(old).accepted)
+        self.assertTrue(inference_queue.submit(new).accepted)
+
+        self.assertTrue(inference_queue.cancel_request(old.request_id))
+
+        self.assertEqual(inference_queue.get().request_id, new.request_id)
+        self.assertEqual(
+            [(job.request_id, reason, lane) for job, reason, lane in dropped],
+            [(old.request_id, "cancelled", "test")],
+        )
+
+    def test_fair_queue_close_drops_and_releases_all_pending_jobs(self):
+        dropped = []
+        inference_queue = FairInferenceQueue(
+            "test",
+            ServerSettings(),
+            lambda job, reason, lane: dropped.append((job, reason, lane)),
+        )
+        final = self._job("a", "final")
+        realtime = self._job("b", "realtime")
+        self.assertTrue(inference_queue.submit(final).accepted)
+        self.assertTrue(inference_queue.submit(realtime).accepted)
+
+        inference_queue.close()
+
+        self.assertEqual(inference_queue.snapshot()["queued"], 0)
+        self.assertEqual(inference_queue.snapshot()["sessions"], 0)
+        self.assertEqual(
+            {(job.request_id, reason, lane) for job, reason, lane in dropped},
+            {
+                (final.request_id, "shutdown", "test"),
+                (realtime.request_id, "shutdown", "test"),
+            },
+        )
+        self.assertIsNone(inference_queue.get())
+        self.assertFalse(inference_queue.submit(self._job("c", "final")).accepted)
+
+    def test_recorder_external_executor_preserves_final_transcription_path(self):
+        class Executor:
+            def __init__(self):
+                self.calls = []
+
+            def transcribe(self, audio, language=None, use_prompt=True):
+                self.calls.append((audio.copy(), language, use_prompt))
+                return TranscriptionResult(text="external executor text")
+
+        executor = Executor()
+        recorder = AudioToTextRecorder.__new__(AudioToTextRecorder)
+        recorder.transcription_lock = threading.Lock()
+        recorder._uses_external_transcription_executor = True
+        recorder.transcription_executor = executor
+        recorder._external_transcription_results = queue.Queue()
+        recorder._external_transcription_threads = []
+        recorder.transcribe_count = 0
+        recorder.audio = np.ones(16, dtype=np.float32)
+        recorder.language = "en"
+        recorder.interrupt_stop_event = threading.Event()
+        recorder.was_interrupted = threading.Event()
+        recorder.state = "transcribing"
+        recorder.spinner = False
+        recorder.halo = None
+        recorder.is_recording = False
+        recorder.allowed_to_early_transcribe = True
+        recorder.detected_language = None
+        recorder.detected_language_probability = 0
+        recorder.last_transcription_bytes = None
+        recorder.last_transcription_bytes_b64 = None
+        recorder.print_transcription_time = False
+        recorder.main_model_type = "fake"
+        recorder.ensure_sentence_starting_uppercase = False
+        recorder.ensure_sentence_ends_with_period = False
+
+        text = recorder.perform_final_transcription(use_prompt=False)
+
+        self.assertEqual(text, "external executor text")
+        self.assertEqual(len(executor.calls), 1)
+        self.assertEqual(executor.calls[0][1:], ("en", False))
+
+    def _job(self, session_id, kind, segment_id=1, sequence=0, deadline_at=None):
+        return InferenceJob(
+            request_id=f"{session_id}-{kind}-{segment_id}-{sequence}",
+            session_id=session_id,
+            kind=kind,
+            audio=b"",
+            language="en",
+            use_prompt=True,
+            segment_id=segment_id,
+            sequence=sequence,
+            generation=0,
+            created_at=time_now_plus(0),
+            deadline_at=deadline_at,
+        )
+
+
+def time_now_plus(seconds):
+    import time
+
+    return time.monotonic() + seconds
+
+
+if __name__ == "__main__":
+    unittest.main()

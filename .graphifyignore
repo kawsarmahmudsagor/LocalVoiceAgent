@@ -1,0 +1,19 @@
+# test audio clips
+*.wav
+*.mp3
+# translated duplicate docs
+RealtimeTTS/docs/ar/
+RealtimeTTS/docs/de/
+RealtimeTTS/docs/es/
+RealtimeTTS/docs/fr/
+RealtimeTTS/docs/hi/
+RealtimeTTS/docs/it/
+RealtimeTTS/docs/ja/
+RealtimeTTS/docs/ko/
+RealtimeTTS/docs/pt/
+RealtimeTTS/docs/ru/
+RealtimeTTS/docs/zh/
+# vendored third-party RVC code
+RealtimeTTS/example_rvc/rvc/
+# generated html / benchmark dumps
+*.html

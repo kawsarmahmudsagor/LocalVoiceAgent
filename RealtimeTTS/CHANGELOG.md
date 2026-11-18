@@ -1,0 +1,205 @@
+# Changelog
+
+## 0.8.9 - 2026-09-26
+
+### Fixed
+
+- Normalize Qwen HTTP/WebSocket language codes such as `de` and `en` before
+  native synthesis, avoiding the standalone Studio's native status -3 error.
+- Preserve inherited codec sampling in Studio. A null server default no longer
+  turns into an explicit false override; Server-Default, On and Off stay distinct.
+- Use an editable 80 ms browser buffer for both CPU and GPU Studio connections.
+  This browser buffer is separate from the engine startup reserve.
+- Avoid inserting a new startup reserve for floating-point rounding at contiguous
+  audio boundaries; include rebuffering silence in the reported gap duration.
+- Make Studio English by default, including its example, status and error messages.
+  German remains available as a speech language.
+
+### Added
+
+- `--demo-voice` downloads, verifies, registers and warms the public neutral
+  cloning reference for CPU and GPU servers; later starts reuse the cached voice.
+- A packaged `--preset windows-3900x` and `--device gpu` alias simplify server
+  startup without a checkout, extra scripts, or bundled model/voice assets.
+- An opt-in Windows Ryzen 9 3900X server launcher with the tested six-plus-six
+  worker layout, affinity masks, AboveNormal process priority and 80 ms server
+  reserve, plus fresh-venv and reference-voice instructions. The preset uses
+  a consistent one-frame cadence to avoid the initial short-chunk scheduling gap.
+- Optional CPU fused F32 attention in native 0.4.1, enabled with
+  `--cpu-fused-attention` on the server or `QWENTTS_CPU_FLASH_ATTN=1` before
+  engine initialization. It is off by default and keeps the existing model and
+  precision; changed floating-point evaluation order can change generated audio.
+- Regression coverage for Studio sampling defaults and standalone language codes.
+
+CPU extras now pin native 0.4.1; GPU native remains 0.2.0. Model weights,
+quantization and sampling defaults are unchanged.
+
+## 0.8.8 - 2026-09-26
+
+### Fixed
+
+- Constrain Qwen extras to Numba 0.62.x on Intel Macs, the last release line
+  with prebuilt Intel Mac wheels. This avoids an unintended LLVM source build.
+  Windows, Linux and Apple Silicon dependency selections are unchanged.
+- Prevent compact demo shutdown from waiting forever when a child process
+  retains the redirected stderr pipe; preserve warnings and partial final lines.
+- Includes the Qwen CPU scheduling and demo improvements prepared in 0.8.7.
+  Version 0.8.7 was retained as TestPyPI qualification evidence.
+
+## 0.8.7 - 2026-09-22
+
+### Added
+
+- Optional CPU decoder overlap with separate worker pools, configurable chunk
+  cadence, and logical-CPU affinity through the engine, server and emotional demo.
+- Optional native startup priority via QWENTTS_CPU_STARTUP_PRIORITY=second_chunk.
+  It trades a small amount of total generation time for earlier startup.
+
+### Changed
+
+- Pin the CPU extras to realtimetts-qwen-native-cpu 0.4.0; retain GPU native 0.2.0.
+- Restore compact colored synthesis output, with --verbose for native diagnostics.
+  Keep the full editable emotional demo in tests/faster_qwen_emotions.py.
+- Preserve the serial/unpinned defaults and 160 ms startup buffer. Models,
+  precision and sampling are unchanged. GPU startup experiments are excluded.
+
+The tested Linux profile reduced RTF by 23-26% with identical PCM in the paired
+cases. This is a measured configuration, not a universal speed guarantee.
+See [CPU scheduling](docs/qwen-cpu-scheduling.md) for settings and tradeoffs.
+
+## 0.8.6 - 2026-09-20
+
+### Added
+
+- CPU-only Qwen installation through `qwen-cpu` and `qwen-cpu-server`, using a
+  separate native distribution/import namespace without overwriting GPU files.
+- Restore the advertised `tests/faster_qwen_emotions.py` command, its original
+  eleven emotional references and texts, and the 0.6B Base speaker-only workflow.
+  The installed package also exposes `realtimetts-qwen-emotions`.
+- Include the CPU onset-recovery behavior, segmented narration controls
+  (`flush`, `segment_start`, `skip_segment`), and language-detection endpoint
+  used by the Linux deployment.
+
+### Changed
+
+- Constrain Windows Qwen installs to the verified Numba 0.66 line to avoid a
+  first-run optimizer stall while resampling the original emotional references.
+
+- Start eligible speech fragments at em dashes in both local and server paths.
+- Preserve experimental prefix-splice work on its own development branch rather
+  than including it in the production package.
+- Rehearse the GPU/CPU installation and real-speech workflows on TestPyPI before
+  publishing final artifacts to PyPI. Platform verification is a release gate,
+  not an import-only claim; see `docs/qwen-release-rehearsal.md`.
+
+## 0.8.4 - 2026-08-31
+
+### Added
+
+- Add an opt-in, checkpoint-validated Qwen3-TTS x-vector onset profile that
+  prevents known silent c0 tokens from being generated during the first three
+  codec frames. It remains disabled by default and never applies to ICL voices.
+
+### Changed
+
+- Require `realtimetts-qwen-native==0.2.0` and qwentts.cpp ABI 5 for the
+  request-local onset profile contract.
+
+## 0.8.3 - 2026-08-30
+
+### Fixed
+
+- Recommend the full fastText `lid.176.bin` model for production automatic
+  language and reference-voice routing while retaining compressed `.ftz`
+  compatibility with an explicit startup warning.
+
+## 0.8.2 - 2026-08-28
+
+### Fixed
+
+- Smooth long Qwen fragment boundaries by retaining and fading the final 15 ms
+  after the first second of audio without delaying startup or short fragments.
+- Add configurable 150 ms mid-sentence and 300 ms sentence-ending pauses to
+  Qwen WebSocket text streaming.
+- Reduce the Qwen silence-trim onset fade from 20 ms to 15 ms.
+
+### Release process
+
+- Harden deployed-runtime attestations, service verification, path
+  normalization, and remote release-ref validation.
+
+## 0.8.1 - 2026-08-27
+
+### Fixed
+
+- Warm every configured Qwen language-route voice before the server becomes
+  ready, with the route's actual synthesis language and without duplicate work.
+- Keep compatible generated Qwen voice caches across Python binding package
+  version changes; native ABI/version and model identities remain part of the
+  cache contract.
+
+### Release process
+
+- Require an exact deployed-wheel attestation before publication and block
+  releases when any linked worktree contains uncommitted changes.
+
+## 0.8.0 - 2026-08-27
+
+### Added
+
+- `HiggsEngine`, a small raw-PCM streaming client for separately operated
+  SGLang-Omni Higgs Audio v3 servers, with response-header validation and
+  fallback-safe failures.
+- Optional forced word and character alignment APIs, sentence-audio capture,
+  MMS/torchaudio and omniASR adapters, VAD helpers, and `on_word` integration.
+- A `language` selector for the CPU PocketTTS engine.
+- A bounded Kokoro blended-voice cache and explicit native-timing capability
+  flags for Azure, Cartesia, and Kokoro.
+- Acknowledged native Qwen pause/resume controls for the WebSocket server.
+- Opt-in fragment lookahead through the public `stream2sentence` 1.0.4 release.
+
+### Changed
+
+- Require Python 3.10 through 3.14 for the core package.
+
+### Fixed
+
+- Treat empty Higgs and Kokoro synthesis results as failures instead
+  of successful silent output.
+- Prevent late nonblocking alignment results from leaking into a later playback.
+- Make immediate playback stop finish cleanup deterministically after the
+  playback worker exits, with a bounded watchdog for blocked audio backends.
+- Preserve explicit Kokoro language overrides, reject mixed-language or invalid
+  blend formulas, and release cached pipelines and queues during shutdown.
+- Initialize PocketTTS GPU stateful-module names and restore nested cached state
+  keys correctly.
+
+## 0.7.4
+
+### Added
+
+- Native `QwenEngine` integration through the ABI-4 `qwentts.cpp` binding.
+- Installable headless Qwen server via `realtimetts[qwen-server]` and the
+  `realtimetts-qwen-server` console command.
+- Persistent Qwen voice registration, incremental text streaming, language
+  routing, health/readiness reporting, and production request controls.
+- `InflectEngine` with pinned PyTorch and ONNX model revisions.
+- A shared package version exposed as `RealtimeTTS.__version__`.
+
+### Changed
+
+- Replaced `FasterQwenEngine` with the native `QwenEngine` implementation.
+- Made Stanza opt-in and selected the NLTK plus rule-based tokenizer by default.
+- Kept the server extra headless while engine playback extras continue to use
+  PyAudio/PortAudio.
+- Selected `realtimetts-qwen-native` 0.1.0 for the validated Windows and Linux
+  CUDA 12.8 Qwen wheels. Unsupported platforms are not release targets.
+
+### Fixed
+
+- Preserved host logging configuration while loading the Inflect runtime.
+- Hardened streaming silence trimming and short-utterance startup behavior.
+- Added deterministic cancellation, bounded concurrency, and graceful shutdown
+  behavior to the Qwen server.
+- Fixed WebSocket cancellation after the `end` event so active PCM synthesis
+  stops promptly and emits the terminal `cancelled` event.
