@@ -53,7 +53,9 @@ class TransformersBackend:
             import bitsandbytes  # noqa: F401
         except Exception as e:  # ImportError or a broken CUDA setup inside bitsandbytes
             raise LLMError(f"bitsandbytes failed to import ({e}); it is required for HF_LOAD_IN_4BIT") from e
-        from transformers import AutoModelForImageTextToText, AutoProcessor, BitsAndBytesConfig
+        # Text-only load: Qwen3.5's "qwen3_5" config maps to Qwen3_5ForCausalLM, which
+        # skips the vision encoder (less VRAM) and needs no Pillow/torchvision.
+        from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
         s = self.settings
         kwargs: dict = {"device_map": "cuda:0"}
@@ -62,10 +64,10 @@ class TransformersBackend:
                 load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=torch.bfloat16)
         else:
             kwargs["dtype"] = torch.bfloat16
-        processor = AutoProcessor.from_pretrained(s.hf_model_id)
-        model = AutoModelForImageTextToText.from_pretrained(s.hf_model_id, **kwargs)
+        tokenizer = AutoTokenizer.from_pretrained(s.hf_model_id)
+        model = AutoModelForCausalLM.from_pretrained(s.hf_model_id, **kwargs)
         model.eval()
-        return model, processor.tokenizer
+        return model, tokenizer
 
     def stream(self, messages: list[dict], params: GenerationParams,
                stop_event: threading.Event) -> Iterator[str]:
