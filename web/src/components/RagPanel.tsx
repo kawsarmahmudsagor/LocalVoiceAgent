@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { RagSettings } from "../protocol";
-import type { UploadResult } from "../rag";
+import { chunkPatch, type UploadResult } from "../rag";
 import type { AppState } from "../state";
 
 interface Props {
@@ -23,19 +23,22 @@ interface NumProps {
   max: number;
   step?: number;
   disabled: boolean;
-  onCommit(v: number): void;
+  /** Return false when nothing was sent (e.g. the confirm was cancelled): the box then shows the real value again. */
+  onCommit(v: number): boolean | void;
+  /** Changes when the server sends fresh settings, so a rejected edit does not linger. */
+  resetKey?: unknown;
 }
 
 /** A number box that applies on blur or Enter, so typing "800" does not fire three updates. */
-function NumField({ id, label, value, min, max, step = 1, disabled, onCommit }: NumProps) {
+function NumField({ id, label, value, min, max, step = 1, disabled, onCommit, resetKey }: NumProps) {
   const [draft, setDraft] = useState(String(value));
-  useEffect(() => setDraft(String(value)), [value]);
+  useEffect(() => setDraft(String(value)), [value, resetKey]);
   const commit = () => {
     const n = Number(draft);
     if (draft.trim() === "" || Number.isNaN(n)) { setDraft(String(value)); return; }
     const v = Math.min(max, Math.max(min, n));
     setDraft(String(v));
-    if (v !== value) onCommit(v);
+    if (v !== value && onCommit(v) === false) setDraft(String(value));
   };
   return (
     <div className="field">
@@ -61,9 +64,12 @@ export function RagPanel({ rag, disabled, onUpdate, onUpload, onDelete, onReinde
   const unavailable = embedders.filter(e => !e.available);
 
   // Index settings change what the stored vectors mean: confirm, then the server re-indexes.
-  const indexChange = (patch: Partial<RagSettings>) => {
-    if (window.confirm(CONFIRM)) onUpdate(patch);
+  const indexChange = (patch: Partial<RagSettings>): boolean => {
+    if (!window.confirm(CONFIRM)) return false;
+    onUpdate(patch);
+    return true;
   };
+  const rk = rag.settings;
 
   const upload = async (list: FileList | File[] | null) => {
     const files = list ? Array.from(list) : [];
@@ -116,20 +122,21 @@ export function RagPanel({ rag, disabled, onUpdate, onUpload, onDelete, onReinde
       <fieldset className="rag-section" disabled={busy}>
         <legend>Retrieval</legend>
         <NumField id="rag-top-k" label="Top K" value={settings.top_k} min={1} max={10} disabled={busy}
-          onCommit={v => onUpdate({ top_k: v })} />
+          resetKey={rk} onCommit={v => onUpdate({ top_k: v })} />
         <NumField id="rag-min-score" label="Min similarity" value={settings.min_score} min={0} max={1} step={0.05}
-          disabled={busy} onCommit={v => onUpdate({ min_score: v })} />
+          disabled={busy} resetKey={rk} onCommit={v => onUpdate({ min_score: v })} />
         <NumField id="rag-max-chars" label="Max context chars" value={settings.max_context_chars} min={200} max={8000}
-          step={100} disabled={busy} onCommit={v => onUpdate({ max_context_chars: v })} />
+          step={100} disabled={busy} resetKey={rk} onCommit={v => onUpdate({ max_context_chars: v })} />
       </fieldset>
 
       <fieldset className="rag-section" disabled={busy}>
         <legend>Indexing</legend>
         <NumField id="rag-chunk-size" label="Chunk size" value={settings.chunk_size} min={200} max={4000} step={50}
-          disabled={busy} onCommit={v => indexChange({ chunk_size: v })} />
+          disabled={busy} resetKey={rk}
+          onCommit={v => indexChange(chunkPatch(v, settings.chunk_overlap))} />
         <NumField id="rag-overlap" label="Overlap" value={settings.chunk_overlap} min={0}
           max={Math.floor(settings.chunk_size / 2)} step={10} disabled={busy}
-          onCommit={v => indexChange({ chunk_overlap: v })} />
+          resetKey={rk} onCommit={v => indexChange({ chunk_overlap: v })} />
         <div className="row">
           <button type="button" disabled={busy || documents.length === 0}
             onClick={() => { if (window.confirm(CONFIRM)) onReindex(); }}>Re-index all</button>

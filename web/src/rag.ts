@@ -25,3 +25,9 @@ export async function reindexAll(f: typeof fetch = fetch): Promise<void> {
 }
 
 export function validTemplate(t: string): boolean { return t.includes("{context}"); }
+
+/** Shrinking chunks below twice the overlap is rejected by the server, so lower the overlap in the same patch. */
+export function chunkPatch(size: number, overlap: number): { chunk_size: number; chunk_overlap?: number } {
+  const max = Math.floor(size / 2);
+  return overlap > max ? { chunk_size: size, chunk_overlap: max } : { chunk_size: size };
+}

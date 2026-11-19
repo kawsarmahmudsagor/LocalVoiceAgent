@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { uploadDocuments, deleteDocument, reindexAll, validTemplate } from "./rag";
+import { uploadDocuments, deleteDocument, reindexAll, validTemplate, chunkPatch } from "./rag";
 describe("rag api", () => {
   it("uploads every file in one multipart request", async () => {
     const calls: [string, RequestInit][] = [];
@@ -14,4 +14,13 @@ describe("rag api", () => {
     await expect(reindexAll(busy)).rejects.toThrow("busy");
   });
   it("validTemplate requires {context}", () => { expect(validTemplate("x {context}")).toBe(true); expect(validTemplate("x")).toBe(false); });
+});
+
+describe("chunkPatch", () => {
+  it("lowers the overlap together with a small chunk size", () => {
+    expect(chunkPatch(200, 120)).toEqual({ chunk_size: 200, chunk_overlap: 100 });
+  });
+  it("leaves the overlap alone when it still fits", () => {
+    expect(chunkPatch(800, 120)).toEqual({ chunk_size: 800 });
+  });
 });
