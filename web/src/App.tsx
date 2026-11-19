@@ -10,7 +10,7 @@ import { SystemPromptPanel } from "./components/SystemPromptPanel";
 import { Tabs } from "./components/Tabs";
 import type { Defaults, RagSettings, Role } from "./protocol";
 import { createExclusive } from "./exclusive";
-import { deleteDocument, reindexAll, uploadDocuments } from "./rag";
+import { deleteDocument, ragLocked, reindexAll, uploadDocuments } from "./rag";
 import { initialState, reducer, type AppState } from "./state";
 import { VoiceSocket, socketUrl } from "./ws";
 
@@ -164,7 +164,7 @@ export default function App() {
     socket.current?.send({ type: "update_rag", ...patch });
   };
 
-  const ragDisabled = state.status !== "idle" || !state.connected;
+  const ragDisabled = ragLocked(state.status, state.connected);
 
   return (
     <div className="shell">
@@ -193,6 +193,7 @@ export default function App() {
       <div className="tabpanel scroll" role="tabpanel" id="panel-rag" aria-labelledby="tab-rag"
         hidden={state.tab !== "rag"}>
         <RagPanel rag={state.rag} disabled={ragDisabled} onUpdate={onUpdateRag}
+          error={state.error} onDismissError={() => dispatch({ kind: "dismiss_error" })}
           onUpload={files => uploadDocuments(files)} onDelete={id => void deleteDocument(id).catch(reportRagError)}
           onReindex={() => void reindexAll().catch(reportRagError)} />
       </div>

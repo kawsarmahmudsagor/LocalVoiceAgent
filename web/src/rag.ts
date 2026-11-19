@@ -1,3 +1,4 @@
+import type { Status } from "./protocol";
 export type UploadResult = { name: string; doc_id: string; state: string } | { name: string; error: string };
 
 async function fail(r: Response): Promise<never> {
@@ -30,4 +31,9 @@ export function validTemplate(t: string): boolean { return t.includes("{context}
 export function chunkPatch(size: number, overlap: number): { chunk_size: number; chunk_overlap?: number } {
   const max = Math.floor(size / 2);
   return overlap > max ? { chunk_size: size, chunk_overlap: max } : { chunk_size: size };
+}
+
+/** RAG settings are locked only while a turn runs (spec §3.4), like v2's model pickers: "listening" is between turns. */
+export function ragLocked(status: Status, connected: boolean): boolean {
+  return !connected || !(status === "idle" || status === "listening");
 }

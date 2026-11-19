@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { uploadDocuments, deleteDocument, reindexAll, validTemplate, chunkPatch } from "./rag";
+import { uploadDocuments, deleteDocument, reindexAll, validTemplate, chunkPatch, ragLocked } from "./rag";
 describe("rag api", () => {
   it("uploads every file in one multipart request", async () => {
     const calls: [string, RequestInit][] = [];
@@ -22,5 +22,17 @@ describe("chunkPatch", () => {
   });
   it("leaves the overlap alone when it still fits", () => {
     expect(chunkPatch(800, 120)).toEqual({ chunk_size: 800 });
+  });
+});
+
+describe("ragLocked", () => {
+  it("allows changes between turns, also while the mic is listening", () => {
+    expect(ragLocked("idle", true)).toBe(false);
+    expect(ragLocked("listening", true)).toBe(false);
+  });
+  it("locks while a turn runs or when disconnected", () => {
+    expect(ragLocked("thinking", true)).toBe(true);
+    expect(ragLocked("speaking", true)).toBe(true);
+    expect(ragLocked("idle", false)).toBe(true);
   });
 });

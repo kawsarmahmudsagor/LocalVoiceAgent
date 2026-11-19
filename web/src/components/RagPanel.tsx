@@ -10,6 +10,9 @@ interface Props {
   onUpload(files: File[]): Promise<UploadResult[]>;
   onDelete(id: string): void;
   onReindex(): void;
+  /** The session's current error (bad_settings / rag_busy / rag_error land here); the Playground StatusBar shows it too. */
+  error: string | null;
+  onDismissError(): void;
 }
 
 const CONFIRM = "Re-index all documents?";
@@ -50,7 +53,7 @@ function NumField({ id, label, value, min, max, step = 1, disabled, onCommit, re
   );
 }
 
-export function RagPanel({ rag, disabled, onUpdate, onUpload, onDelete, onReindex }: Props) {
+export function RagPanel({ rag, disabled, onUpdate, onUpload, onDelete, onReindex, error, onDismissError }: Props) {
   const [errors, setErrors] = useState<{ name: string; error: string }[]>([]);
   const [uploading, setUploading] = useState(false);
   const [over, setOver] = useState(false);
@@ -89,6 +92,12 @@ export function RagPanel({ rag, disabled, onUpdate, onUpload, onDelete, onReinde
 
   return (
     <div className="page rag-page">
+      {error && (
+        <div className="error" role="alert">
+          <span>{error}</span>
+          <button type="button" className="ghost" onClick={onDismissError} aria-label="Dismiss error">×</button>
+        </div>
+      )}
       {rag.error && <div className="error" role="alert"><span>{rag.error}</span></div>}
 
       <label className="check">
