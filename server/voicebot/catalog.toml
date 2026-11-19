@@ -1,5 +1,9 @@
-# Pre-benchmark catalog: every pool entry except chatterbox (its chatterbox-tts pins torch 2.6.0, spec §3.1).
-# All of them resolve in the server venv with torch 2.7.1+cu128. Task 11 (`python -m voicebot.bench.resolve`)
+# Pre-benchmark catalog: every pool entry except two, which cannot share the server venv:
+# - chatterbox: chatterbox-tts pins torch 2.6.0 (spec §3.1).
+# - kroko-en-128-rt: the kroko-onnx 1.12.9 wheel installs its own libonnxruntime.so (ONNX Runtime 1.17.1) into
+#   sherpa_onnx/lib/, which breaks sherpa-onnx 1.13.4 ("version `VERS_1.27.0' not found"). It is still benchmarked
+#   in venvs/bench-kroko; it returns as a worker (plan Task 16a) only if it makes the shortlist.
+# The rest resolve in the server venv with torch 2.7.1+cu128. Task 11 (`python -m voicebot.bench.resolve`)
 # replaces this file with the measured shortlist.
 # sherpa-parakeet-v3: the k2-fsa archive was re-uploaded on 2026-11-07, so RealtimeSTT's pinned SHA-256 is stale.
 # Its weights were fetched by hand and checked against GitHub's asset digest (sha256:1495e91b...).
@@ -80,18 +84,6 @@ fetch = "sherpa:nemotron"
 streaming = true
 vram_mb = 0
 options = { provider = "cpu", num_threads = 4, download_root = "models/sherpa-onnx" }
-
-[[entry]]
-slug = "kroko-en-128-rt"
-kind = "stt"
-role = "realtime"
-engine = "kroko_onnx"
-model = "Kroko-EN-Community-128-L-Streaming-001.data"
-device = "cpu"
-family = "kroko"
-fetch = "kroko:Kroko-EN-Community-128-L-Streaming-001.data"
-streaming = true
-vram_mb = 0
 
 [[entry]]
 slug = "whisper-tiny-en-rt"

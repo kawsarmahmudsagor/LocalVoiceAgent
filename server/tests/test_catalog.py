@@ -11,6 +11,11 @@ def test_pool_is_valid():
     assert {x.slug for x in for_role(e, "stt", "realtime")} == {"nemotron-rt", "kroko-en-128-rt", "whisper-tiny-en-rt"}
     assert by_slug(e)["nemotron-rt"].streaming and by_slug(e)["kokoro"].voice == "af_heart"
 
+def test_server_catalog_never_mixes_sherpa_and_kroko():
+    # kroko-onnx installs its own libonnxruntime.so (1.17.1) into sherpa_onnx/lib/, which breaks sherpa-onnx 1.13.4.
+    families = {x.family for x in load_catalog(REPO_ROOT / "server" / "voicebot" / "catalog.toml")}
+    assert not {"sherpa", "kroko"} <= families
+
 @pytest.mark.parametrize("slug,role,msg", [("whisper-x", "realtime", "-rt"), ("whisper-x-rt", "final", "-rt"),
                                            ("Bad_Slug", "final", "slug")])
 def test_slug_rules(tmp_path, slug, role, msg):
