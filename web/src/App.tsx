@@ -51,7 +51,16 @@ export default function App() {
           player.current = createPlayer(e.output_format, ackPlayback);
           playerRate.current = e.output_format.sample_rate;
         }
-        if (e.type === "user_transcript") turnId.current = e.turn_id;
+        if (e.type === "user_transcript") {
+          turnId.current = e.turn_id;
+          player.current?.resetClock(); // the previous reply has finished playing before a new turn starts
+        }
+        if (e.type === "assistant_segment") {
+          const spoken = () => dispatch({ kind: "spoken", turn_id: e.turn_id, text: e.text });
+          if (e.at_s != null && player.current) player.current.schedule(e.at_s, spoken);
+          else spoken();
+          return;
+        }
         dispatch({ kind: "server", event: e });
       },
       onAudio: buf => player.current?.push(buf),

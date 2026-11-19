@@ -222,3 +222,39 @@ def test_browser_mode_stream_opens_no_output_device():                    # e2e:
     e = by_slug(load_catalog(POOL))
     tts.make_tts(Settings.load(env={}), stream_cls=sc, entry=e["kokoro"], module=NS(KokoroEngine=lambda **k: "e"))
     assert made[-1] == {"muted": True}
+
+class QueuedStream(Stream):
+    """Like muted RealtimeTTS: sentences are synthesized in order into engine.queue, and the player thread
+    sends chunks later. Here every sentence is queued before the first chunk is sent."""
+    def __init__(self, sentences):
+        import queue
+        super().__init__(); self.sentences = sentences; self.engine.queue = queue.Queue()
+    def play(self, **kw):
+        self.play_kw = kw
+        for text, nbytes in self.sentences:
+            kw["before_sentence_synthesized"](text)
+            self.engine.queue.put(b"\0" * nbytes)
+        while not self.engine.queue.empty():
+            kw["on_audio_chunk"](self.engine.queue.get())
+
+def test_browser_audio_reports_sentence_audio_offsets():
+    # 24000 Hz mono s16le: 4800 bytes = 0.1 s. Offsets count queued audio, not sent audio.
+    s, seen = QueuedStream([("One.", 4800), ("Two.", 9600), ("Three.", 0)]), []
+    a = BrowserAudio(Rec(), {"sample_rate": 24000, "channels": 1}); a.set_sink(lambda b: None)
+    a.play(s, lambda: None, on_sentence=lambda t, at: seen.append((t, at)))
+    assert seen == [("One.", 0.0), ("Two.", 0.1), ("Three.", pytest.approx(0.3))]
+    seen.clear(); a.play(s, lambda: None, on_sentence=lambda t, at: seen.append((t, at)))
+    assert seen[0] == ("One.", 0.0)                         # the count restarts with every reply
+
+def test_browser_audio_drops_sentences_after_cut():
+    s, seen = QueuedStream([("One.", 4800), ("Two.", 4800)]), []
+    a = BrowserAudio(Rec(), {"sample_rate": 24000, "channels": 1}); a.set_sink(lambda b: None)
+    orig = s.engine.queue.put
+    s.engine.queue.put = lambda c, *x, **k: (orig(c, *x, **k), a.cut())  # Stop pressed after the first sentence
+    a.play(s, lambda: None, on_sentence=lambda t, at: seen.append(t))
+    assert seen == ["One."]
+
+def test_server_audio_reports_sentences_without_offset():
+    s, seen = QueuedStream([("One.", 4800)]), []
+    ServerAudio(Rec()).play(s, lambda: None, on_sentence=lambda t, at: seen.append((t, at)))
+    assert seen == [("One.", None)]

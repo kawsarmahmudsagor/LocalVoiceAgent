@@ -434,6 +434,11 @@ class VoiceSession:
                 self.timer.mark("playback_started")  # server mode: the PC speakers start now
             self._set_status("speaking")
 
+        def on_sentence(sentence: str, at_s: float | None) -> None:
+            # The browser shows each sentence when its playback reaches at_s (None: show at once).
+            if not stop_event.is_set():
+                self._emit({"type": "assistant_segment", "turn_id": turn_id, "text": sentence, "at_s": at_s})
+
         stopper = self._stopper
         if stopper is not None:
             stopper.join(timeout=5)  # let the previous turn's stop finish before playing again
@@ -447,7 +452,7 @@ class VoiceSession:
                 set_voice(self.stream, voice)
             self._set_status("thinking")
             self.stream.feed(tokens())
-            audio_seconds = self.audio.play(self.stream, on_first_audio)
+            audio_seconds = self.audio.play(self.stream, on_first_audio, on_sentence)
             if not consumed and not stop_event.is_set():
                 # RealtimeTTS failed on its own thread before reading the reply (it only prints the
                 # error there). Without this the turn would end silently as an empty reply.

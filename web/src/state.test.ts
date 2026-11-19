@@ -8,12 +8,25 @@ describe("reducer", () => {
     const s = srv(initialState, cfg); expect(s.settings?.temperature).toBe(0.7);
     const s2 = srv(reducer(s, { kind: "settings", patch: { temperature: 0.1 } }), cfg); expect(s2.settings?.temperature).toBe(0.1);
   });
-  it("streams assistant deltas into one message and finalizes", () => {
+  it("shows sentences as they are spoken, not as the LLM writes them", () => {
     let s = srv(initialState, { type: "user_transcript", text: "hi", turn_id: 3 }); expect(s.turnId).toBe(3);
-    s = srv(s, { type: "assistant_delta", text: "Hel" }); s = srv(s, { type: "assistant_delta", text: "lo" });
-    expect(s.messages.map(m => [m.role, m.text, m.streaming])).toEqual([["user", "hi", false], ["assistant", "Hello", true]]);
-    s = srv(s, { type: "assistant_done", text: "Hello", interrupted: true });
-    expect(s.messages[1]).toMatchObject({ streaming: false, interrupted: true });
+    s = srv(s, { type: "assistant_delta", text: "Hel" }); s = srv(s, { type: "assistant_delta", text: "lo. Bye." });
+    expect(s.messages.map(m => [m.role, m.text, m.streaming])).toEqual([["user", "hi", false], ["assistant", "", true]]);
+    s = srv(s, { type: "assistant_segment", turn_id: 3, text: "Hello.", at_s: 0 });
+    expect(s.messages[1].text).toBe("");                      // segments wait for playback
+    s = reducer(s, { kind: "spoken", turn_id: 3, text: "Hello." });
+    s = reducer(s, { kind: "spoken", turn_id: 2, text: "Stale." });   // an older turn's sentence
+    expect(s.messages[1].text).toBe("Hello.");
+    s = reducer(s, { kind: "spoken", turn_id: 3, text: "Bye." }); expect(s.messages[1].text).toBe("Hello. Bye.");
+    s = srv(s, { type: "assistant_done", text: "Hello. Bye.", interrupted: false });
+    expect(s.messages[1]).toMatchObject({ text: "Hello. Bye.", streaming: false, interrupted: false });
+    expect(reducer(s, { kind: "spoken", turn_id: 3, text: "Late." }).messages[1].text).toBe("Hello. Bye.");
+  });
+  it("an interrupted reply keeps only what was heard", () => {
+    let s = srv(initialState, { type: "user_transcript", text: "hi", turn_id: 1 });
+    s = srv(s, { type: "assistant_delta", text: "One. Two." }); s = reducer(s, { kind: "spoken", turn_id: 1, text: "One." });
+    s = srv(s, { type: "assistant_done", text: "One. Two.", interrupted: true });
+    expect(s.messages[1]).toMatchObject({ text: "One.", streaming: false, interrupted: true });
   });
   it("assistant_done without deltas adds a message if text non-empty", () => {
     expect(srv(initialState, { type: "assistant_done", text: "Sorry.", interrupted: false }).messages).toHaveLength(1);

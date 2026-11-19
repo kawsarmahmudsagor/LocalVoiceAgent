@@ -27,6 +27,8 @@ export type Action =
   | { kind: "settings"; patch: Partial<Defaults> }
   | { kind: "error"; message: string }
   | { kind: "dismiss_error" }
+  /** Playback reached a sentence of this turn's reply: show it. */
+  | { kind: "spoken"; turn_id: number; text: string }
   | { kind: "clear" };
 
 export const initialState: AppState = {
@@ -76,17 +78,18 @@ function applyServer(state: AppState, e: ServerEvent): AppState {
         turnId: e.turn_id,
         messages: addMessage(state.messages, { role: "user", text: e.text, streaming: false, interrupted: false }),
       };
-    case "assistant_delta": {
-      const cur = streamingAssistant(state.messages);
-      if (cur) {
-        return { ...state, messages: state.messages.map(m => (m === cur ? { ...m, text: m.text + e.text } : m)) };
-      }
-      return { ...state, messages: addMessage(state.messages, { role: "assistant", text: e.text, streaming: true, interrupted: false }) };
-    }
+    case "assistant_delta":
+      // The reply text appears sentence by sentence as it is spoken ("spoken"); a delta only opens the bubble.
+      if (streamingAssistant(state.messages)) return state;
+      return { ...state, messages: addMessage(state.messages, { role: "assistant", text: "", streaming: true, interrupted: false }) };
+    case "assistant_segment":
+      return state; // App schedules it on the player and dispatches "spoken" when it sounds
     case "assistant_done": {
       const cur = streamingAssistant(state.messages);
       if (cur) {
-        const done = { ...cur, text: e.text || cur.text, streaming: false, interrupted: e.interrupted };
+        // Interrupted: keep only the sentences that were heard.
+        const text = e.interrupted ? cur.text : e.text || cur.text;
+        const done = { ...cur, text, streaming: false, interrupted: e.interrupted };
         return { ...state, messages: state.messages.map(m => (m === cur ? done : m)) };
       }
       if (!e.text) return state;
@@ -126,6 +129,12 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, error: action.message };
     case "dismiss_error":
       return { ...state, error: null };
+    case "spoken": {
+      const cur = streamingAssistant(state.messages);
+      if (!cur || state.turnId !== action.turn_id) return state;
+      const text = cur.text ? `${cur.text} ${action.text.trim()}` : action.text.trim();
+      return { ...state, messages: state.messages.map(m => (m === cur ? { ...m, text } : m)) };
+    }
     case "clear":
       return { ...state, messages: [], turnId: null };
   }

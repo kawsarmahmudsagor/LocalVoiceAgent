@@ -11,5 +11,5 @@
     "isolatedModules": true,
     "allowImportingTsExtensions": true
   },
-  "include": ["src/audio/mic-worklet.ts", "src/audio/player-worklet.ts", "src/audio/pcm.ts"]
+  "include": ["src/audio/mic-worklet.ts", "src/audio/player-worklet.ts", "src/audio/pcm.ts", "src/audio/marks.ts"]
 }

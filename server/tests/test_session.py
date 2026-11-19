@@ -68,10 +68,11 @@ class FakeAudio:
     def set_recorder(self, r): self.recorder = r
     def set_output_format(self, fmt): self.output_format = fmt
     play_seconds = None   # BrowserAudio returns the seconds of audio it sent to the browser
-    def play(self, stream, on_first_audio):
+    def play(self, stream, on_first_audio, on_sentence=None):
         self.log.append("play"); first = True
-        for chunk in stream.it:
+        for i, chunk in enumerate(stream.it):
             stream.consumed.append(chunk)
+            if on_sentence: on_sentence(chunk, i * 0.5)   # each chunk stands in for one sentence
             if first: on_first_audio(); first = False
             if stream.stopped: break
         return self.play_seconds
@@ -175,6 +176,13 @@ def test_typed_turn_event_order_and_history(session, events, conv):
     m = next(e for e in events if e["type"] == "metrics")
     assert m["source"] == "text" and m["turn_id"] == events[0]["turn_id"] == 1 and m["interrupted"] is False
     assert m["spans"]["total_ms"] >= 0 and m["spans"]["llm_ttft_ms"] is not None and m["spans"]["stt_ms"] is None
+
+def test_spoken_sentences_reach_the_ui_with_audio_offsets(session, events):
+    session.handle({"type": "send_text", "text": "Hi"}); wait_for(lambda: "assistant_done" in types(events))
+    segs = [e for e in events if e["type"] == "assistant_segment"]
+    assert segs == [{"type": "assistant_segment", "turn_id": 1, "text": "Hello", "at_s": 0.0},
+                    {"type": "assistant_segment", "turn_id": 1, "text": " there.", "at_s": 0.5}]
+    assert types(events).index("assistant_segment") < types(events).index("assistant_done")
 
 @pytest.mark.texts(["What time is it?"])
 def test_voice_turn_metrics_and_sink(session_with_texts, sink, events):     # sink fixture: list.append
@@ -387,7 +395,7 @@ def test_config_has_model_fields(session_with_models):
 def test_tts_failure_reports_error_not_an_empty_turn(session, audio, events, sink):   # e2e: NLTK data missing
     # RealtimeTTS fails on its own thread (e.g. stream2sentence cannot load NLTK data) and play()
     # returns without ever reading the LLM stream. The user must see an error, and no metrics are logged.
-    audio.play = lambda stream, on_first_audio: None
+    audio.play = lambda stream, on_first_audio, on_sentence=None: None
     session.handle({"type": "send_text", "text": "Hi"})
     err = wait_for(lambda: next((e for e in events if e["type"] == "error"), None))
     assert err["code"] == "tts_error" and sink == []
