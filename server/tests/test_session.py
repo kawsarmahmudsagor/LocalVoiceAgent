@@ -496,6 +496,17 @@ def test_update_rag_forwards_and_rejects_while_busy(rag_session, rag, events, ba
     # a fresh rag_config resyncs the RAG tab's drafts to the unchanged settings
     assert wait_for(lambda: types(events).count("rag_config") == before + 1)
 
+def test_rag_busy_resync_runs_off_the_calling_thread(rag_session, rag, events, backend):
+    threads = []
+    rag.config_event = lambda: (threads.append(threading.current_thread()), {"type": "rag_config"})[1]
+    backend.gate = threading.Event(); rag_session.handle({"type": "send_text", "text": "x"})
+    wait_for(lambda: "assistant_delta" in types(events))
+    rag_session.handle({"type": "update_rag", "top_k": 4})
+    assert threads == [] or threads[0] is not threading.current_thread()
+    assert wait_for(lambda: any(e["type"] == "error" and e["code"] == "rag_busy" for e in events))
+    assert wait_for(lambda: len(threads) == 1 and "rag_config" in types(events))
+    assert threads[0] is not threading.current_thread()
+
 def test_update_rag_maps_errors_and_emits_config(rag_session, rag, events):
     rag.update_error = ValueError("top_k: must be between 1 and 10")
     rag_session.handle({"type": "update_rag", "top_k": 99})
