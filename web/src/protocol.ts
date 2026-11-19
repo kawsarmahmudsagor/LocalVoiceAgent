@@ -1,6 +1,6 @@
 export type Status = "idle" | "listening" | "thinking" | "speaking";
 export interface OutputFormat { sample_rate: number; channels: number; encoding: "pcm_s16le" }
-export interface Defaults { system_prompt: string; temperature: number; top_p: number; max_tokens: number; voice: string; rag_template?: string }
+export interface Defaults { system_prompt: string; temperature: number; top_p: number; max_tokens: number; voice: string; rag_template: string }
 export type Role = "stt_final" | "stt_realtime" | "tts";
 export interface CatalogEntry { slug: string; kind: "stt" | "tts"; role: "final" | "realtime" | null; device: "cpu" | "cuda";
   vram_mb: number; runtime: "inprocess" | "worker"; streaming: boolean }
