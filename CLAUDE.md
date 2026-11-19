@@ -53,10 +53,11 @@ Ask the user to do these steps, and wait for their results:
 Don't re-open these unless the user asks.
 
 - **Platform for v2:** Linux VM only. The v1 docs stay Windows. v2 spec §2 overrides v1 wherever they differ.
-- **LLM:** `LLM_BACKEND=llamacpp` only on the VM (`unsloth/Qwen3.5-9B-GGUF:Q4_K_M`). The 19 GB transformers checkpoint is outside the disk budget.
+- **LLM:** `LLM_BACKEND=llamacpp` on the VM (`unsloth/Qwen3.5-9B-GGUF:Q4_K_M`).
+- **Deferred: the transformers backend on the VM.** On 2026-11-19 the user had the `Qwen/Qwen3.5-9B` checkpoint downloaded into the Hugging Face cache and marked running and finishing the transformers backend (`server/voicebot/llm/`) on the VM for later. Until then it is a placeholder: do not start on it unless the user asks.
 - **llama-server:** runs from the Docker image `ghcr.io/ggml-org/llama.cpp:server-cuda`. If it lacks `sm_120` kernels, build an image in a container (`scripts/build_llama_image.sh`, plan Task 4).
 - **Audio:** browser mode only. The VM has no mic or speakers, so `AUDIO_IO=server` is rejected on Linux.
-- **Disk:** the user set a budget of about 35 GB for v2 (venvs, weights, images and the LLM), raised to 50 GB on 2026-11-18 when Qwen3-ASR and Coqui XTTS were added.
+- **Disk:** the user set a budget of about 35 GB for v2, raised to 50 GB on 2026-11-18, and lifted it on 2026-11-19 ("the budget is of no issue").
 - **Curated pool (14 entries):** listed in spec §3.1, with the reasons for each excluded engine in spec §3.2. 12 were chosen for the best latency per GB; `qwen3-asr-1-7b` and `coqui-xtts-v2` were added on user request and are forced onto the shortlist by `bench/overrides.toml`.
 - **Torch:** exactly `torch==2.7.1+cu128` (it supports `sm_120`) in every venv. An engine that needs another torch version is dropped and recorded, not worked around. This also keeps disk low, because uv hardlinks one torch copy into every venv.
 - **Shortlist rule (spec §3.4):**
@@ -90,7 +91,7 @@ Don't re-open these unless the user asks.
   - Push only when the user asks.
 - **Secrets:** `.env` is git-ignored. Create it from `.env.example`. Never commit tokens. Hugging Face downloads used here need no token.
 - **Shell scripts** must have LF line endings; `.gitattributes` enforces this.
-- **Ask before** any `sudo` command, deleting model weights or venvs (`scripts/bench_clean.sh` prompts first), or going over the disk budget. Check `df -h ~` after each benchmark family.
+- **Ask before** any `sudo` command, deleting model weights or venvs (`scripts/bench_clean.sh` prompts first). Check `df -h ~` after each benchmark family.
 - **Windows-only files** you can ignore on the VM: `scripts/*.ps1`, `tools/llama/`.
 
 ## The user

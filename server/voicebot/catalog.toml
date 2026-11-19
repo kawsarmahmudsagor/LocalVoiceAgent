@@ -1,0 +1,167 @@
+# Pre-benchmark catalog: every pool entry except chatterbox (its chatterbox-tts pins torch 2.6.0, spec §3.1).
+# All of them resolve in the server venv with torch 2.7.1+cu128. Task 11 (`python -m voicebot.bench.resolve`)
+# replaces this file with the measured shortlist.
+# sherpa-parakeet-v3: the k2-fsa archive was re-uploaded on 2026-11-07, so RealtimeSTT's pinned SHA-256 is stale.
+# Its weights were fetched by hand and checked against GitHub's asset digest (sha256:1495e91b...).
+
+[[entry]]
+slug = "whisper-small-en"
+kind = "stt"
+role = "final"
+engine = "faster_whisper"
+model = "small.en"
+device = "cuda"
+family = "faster-whisper"
+fetch = "auto"
+streaming = false
+vram_mb = 0
+options = { compute_type = "float16" }
+
+[[entry]]
+slug = "whisper-large-v3-turbo"
+kind = "stt"
+role = "final"
+engine = "faster_whisper"
+model = "large-v3-turbo"
+device = "cuda"
+family = "faster-whisper"
+fetch = "auto"
+streaming = false
+vram_mb = 0
+options = { compute_type = "float16" }
+
+[[entry]]
+slug = "transcribe-cpp-parakeet-q4"
+kind = "stt"
+role = "final"
+engine = "transcribe_cpp"
+model = "models/transcribe-cpp/parakeet-tdt-0.6b-v3-Q4_K_M.gguf"
+device = "cuda"
+family = "transcribe-cpp"
+fetch = "manual:see RealtimeSTT/docs/engines/transcribe-cpp.md (download parakeet-tdt-0.6b-v3-Q4_K_M.gguf from handy-computer/parakeet-tdt-0.6b-v3-gguf into models/transcribe-cpp/)"
+streaming = false
+vram_mb = 0
+options = { backend = "cuda" }
+
+[[entry]]
+slug = "sherpa-parakeet-v3"
+kind = "stt"
+role = "final"
+engine = "sherpa_onnx_parakeet"
+model = "nvidia/parakeet-tdt-0.6b-v3"
+device = "cpu"
+family = "sherpa"
+fetch = "sherpa:parakeet"
+streaming = false
+vram_mb = 0
+options = { provider = "cpu", num_threads = 7, download_root = "models/sherpa-onnx" }
+
+[[entry]]
+slug = "qwen3-asr-1-7b"
+kind = "stt"
+role = "final"
+engine = "qwen3_asr"
+model = "Qwen/Qwen3-ASR-1.7B"
+device = "cuda"
+family = "qwen-asr"
+fetch = "auto"
+streaming = false
+vram_mb = 0
+
+[[entry]]
+slug = "nemotron-rt"
+kind = "stt"
+role = "realtime"
+engine = "sherpa_onnx_nemotron"
+model = "sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11"
+device = "cpu"
+family = "sherpa"
+fetch = "sherpa:nemotron"
+streaming = true
+vram_mb = 0
+options = { provider = "cpu", num_threads = 4, download_root = "models/sherpa-onnx" }
+
+[[entry]]
+slug = "kroko-en-128-rt"
+kind = "stt"
+role = "realtime"
+engine = "kroko_onnx"
+model = "Kroko-EN-Community-128-L-Streaming-001.data"
+device = "cpu"
+family = "kroko"
+fetch = "kroko:Kroko-EN-Community-128-L-Streaming-001.data"
+streaming = true
+vram_mb = 0
+
+[[entry]]
+slug = "whisper-tiny-en-rt"
+kind = "stt"
+role = "realtime"
+engine = "faster_whisper"
+model = "tiny.en"
+device = "cuda"
+family = "faster-whisper"
+fetch = "auto"
+streaming = false
+vram_mb = 0
+options = { compute_type = "float16" }
+
+[[entry]]
+slug = "kokoro"
+kind = "tts"
+engine = "KokoroEngine"
+model = "kokoro"
+device = "cuda"
+family = "kokoro"
+fetch = "auto"
+streaming = false
+vram_mb = 0
+voice = "af_heart"
+
+[[entry]]
+slug = "qwen-cuda"
+kind = "tts"
+engine = "QwenEngine"
+model = "qwen-talker-0.6b-base-Q8_0"
+device = "cuda"
+family = "qwen"
+fetch = "manual:see RealtimeTTS/docs/engines/qwen.md (default Q8_0 talker and codec)"
+streaming = false
+vram_mb = 0
+options = { reference_audio = "assets/ref_voice.wav", reference_text_file = "assets/ref_voice.txt" }
+
+[[entry]]
+slug = "inflect-cuda"
+kind = "tts"
+engine = "InflectEngine"
+model = "Inflect-Micro-v2"
+device = "cuda"
+family = "inflect"
+fetch = "auto"
+streaming = false
+vram_mb = 0
+options = { backend = "pytorch", device = "cuda:0" }
+
+[[entry]]
+slug = "piper"
+kind = "tts"
+engine = "PiperEngine"
+model = "en_US-lessac-medium"
+device = "cpu"
+family = "piper"
+fetch = "piper:en_US-lessac-medium"
+streaming = false
+vram_mb = 0
+options = { model_dir = "models/piper" }
+
+[[entry]]
+slug = "coqui-xtts-v2"
+kind = "tts"
+engine = "CoquiEngine"
+model = "xtts_v2"
+device = "cuda"
+family = "coqui"
+fetch = "auto"
+streaming = false
+vram_mb = 0
+options = { voice = "assets/ref_voice.wav", language = "en", device = "cuda" }

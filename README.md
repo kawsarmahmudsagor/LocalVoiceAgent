@@ -85,7 +85,9 @@ If port 8000 is taken on the VM, set `WEB_PORT` in `.env` (for example `8001`). 
 
 **HTTPS on the LAN address (optional):** run `scripts/make_cert.sh [ip]`, then set `WEB_HOST=0.0.0.0`, `WEB_SSL_CERTFILE=certs/cert.pem` and `WEB_SSL_KEYFILE=certs/key.pem`. Open `https://<vm-ip>:8000` and accept the certificate once.
 
-**Not available on the VM:** the `transformers` backend, because its 19 GB checkpoint is outside the disk budget. Server audio (`AUDIO_IO=server`) is also unavailable, because the VM has no microphone or speakers, and the app refuses to start with it.
+**Deferred on the VM:** the `transformers` backend. The `Qwen/Qwen3.5-9B` checkpoint is downloaded into the Hugging Face cache, but running the backend on the VM is left for later; use `llamacpp`.
+
+**Not available on the VM:** server audio (`AUDIO_IO=server`), because the VM has no microphone or speakers, and the app refuses to start with it.
 
 ## Latency
 
