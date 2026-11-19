@@ -69,3 +69,13 @@ def test_append_turn_text(tmp_path):
     append_turn_text(p, rec); append_turn_text(p, rec | {"turn_id": 2})
     t = p.read_text()
     assert t.count("=== Turn ") == 2 and "0.100 s (100 ms)" in t
+
+def test_format_turn_shows_models_and_text():
+    from voicebot.timing import format_turn
+    rec = {"turn_id": 5, "source": "voice", "interrupted": False, "ts": "2026-11-19T10:00:00.000+00:00",
+           "stt_final": "qwen3-asr-1-7b", "stt_realtime": "nemotron-rt", "tts_model": "piper",
+           "transcript": "What is the capital of France?", "reply": "Paris.", "spans": {}}
+    lines = format_turn(rec).splitlines()
+    assert lines[1].split() == ["stt_final=qwen3-asr-1-7b", "stt_realtime=nemotron-rt", "tts_model=piper"]
+    assert '  heard: "What is the capital of France?"' in lines
+    assert '  reply: "Paris."' in lines

@@ -391,3 +391,8 @@ def test_tts_failure_reports_error_not_an_empty_turn(session, audio, events, sin
     session.handle({"type": "send_text", "text": "Hi"})
     err = wait_for(lambda: next((e for e in events if e["type"] == "error"), None))
     assert err["code"] == "tts_error" and sink == []
+
+def test_metrics_record_keeps_transcript_and_reply(session_with_models, sink):
+    session_with_models.handle({"type": "send_text", "text": "hello there"}); wait_for(lambda: sink)
+    assert sink[0]["transcript"] == "hello there"
+    assert sink[0]["reply"] and len(sink[0]["reply"]) == sink[0]["reply_chars"]

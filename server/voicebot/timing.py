@@ -113,6 +113,8 @@ def append_jsonl(path: Path, record: dict) -> None:
         log.exception("could not append to %s", path)
 
 
+# The selected catalog slugs come first: stt_model below is the .env default, not the active engine.
+_MODEL_KEYS = ("stt_final", "stt_realtime", "tts_model")
 _CONTEXT_KEYS = ("llm_backend", "model_label", "audio_io", "stt_model", "stt_device", "voice",
                  "temperature", "top_p", "max_tokens", "reply_chars",
                  "kokoro_trim_silence", "kokoro_extra_end_ms", "tts_first_fragment_words")
@@ -131,9 +133,15 @@ def format_turn(record: dict) -> str:
     if record.get("interrupted"):
         head.append("interrupted")
     lines = [f"=== {' | '.join(head)} | {ts} ==="]
+    models = [f"{k}={record[k]}" for k in _MODEL_KEYS if record.get(k) is not None]
+    if models:
+        lines.append("  " + "  ".join(models))
     ctx = [f"{k}={record[k]}" for k in _CONTEXT_KEYS if record.get(k) is not None]
     if ctx:
         lines.append("  " + "  ".join(ctx))
+    for label, key in (("heard", "transcript"), ("reply", "reply")):
+        if record.get(key) is not None:
+            lines.append(f'  {label}: "{record[key]}"')
     spans = record.get("spans") or {}
     for span in SPANS:
         lines.append(f"  {span.removesuffix('_ms'):<18}{fmt_ms(spans.get(span))}")

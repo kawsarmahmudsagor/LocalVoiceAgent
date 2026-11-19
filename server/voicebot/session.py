@@ -476,7 +476,7 @@ class VoiceSession:
             if reply:
                 self.conversation.add_exchange(text, reply)
             self._emit({"type": "assistant_done", "text": reply, "interrupted": interrupted})
-            self._finish_metrics(turn_id, source, interrupted, params, len(reply))
+            self._finish_metrics(turn_id, source, interrupted, params, reply, text)
         except Exception as e:
             log.exception("turn %d failed", turn_id)
             self._error("llm_error", str(e))
@@ -504,7 +504,7 @@ class VoiceSession:
             stop_event.wait(remaining)
 
     def _finish_metrics(self, turn_id: int, source: str, interrupted: bool, params: GenerationParams,
-                        reply_chars: int) -> None:
+                        reply: str, transcript: str) -> None:
         report = self.timer.report()
         metrics = {"type": "metrics", "turn_id": turn_id, "source": source, "interrupted": interrupted, **report}
         self._emit(metrics)
@@ -516,7 +516,7 @@ class VoiceSession:
         record = {k: v for k, v in metrics.items() if k != "type"}
         record.update(ts=datetime.now(timezone.utc).isoformat(timespec="milliseconds"), **self.info,
                       voice=self.voice, temperature=params.temperature, top_p=params.top_p,
-                      max_tokens=params.max_tokens, reply_chars=reply_chars)
+                      max_tokens=params.max_tokens, reply_chars=len(reply), transcript=transcript, reply=reply)
         if self.models is not None:
             m = self.models.current
             record.update(stt_final=m.get("stt_final"), stt_realtime=m.get("stt_realtime", "off"),
