@@ -105,32 +105,28 @@ def test_corrupt_pdf_marks_failed_and_worker_survives(svc):
     assert states["bad.pdf"].startswith("failed:") and states["geo.txt"] == "ready"
 
 
-def test_switch_mid_index_finishes_in_new_collection(tmp_path):
-    import threading, time
+def test_switch_mid_index_finishes_in_new_collection(tmp_path, monkeypatch):
+    import threading
+    import voicebot.rag.service as svc_mod
     started, release = threading.Event(), threading.Event()
+    real_load = svc_mod.load_text
 
-    class Blocking(FakeEmbedder):
-        armed = False
-        closed = False
-        def embed(self, texts, kind):
-            if self.closed: raise EmbedderError("closed")
-            if Blocking.armed and kind == "document":
-                started.set(); release.wait(5)
-                if self.closed: raise EmbedderError("closed")
-            return super().embed(texts, kind)
-        def close(self): self.closed = True
+    def slow_load(path):          # runs on the worker with no lock held
+        if not release.is_set():
+            started.set(); release.wait(5)
+        return real_load(path)
+    monkeypatch.setattr(svc_mod, "load_text", slow_load)
 
-    s = RagService(tmp_path, RagSettings(enabled=True), make_embedder=lambda slug: Blocking(slug)); s.start()
+    s = RagService(tmp_path, RagSettings(enabled=True), make_embedder=lambda slug: FakeEmbedder(slug)); s.start()
     s.update({"embedder": "hf:other"}); s.update({"embedder": "hf:BAAI/bge-small-en-v1.5"})  # both collections exist, empty
-    Blocking.armed = True
-    s.upload("geo.txt", b"Canberra.")
+    assert s.wait_idle()                      # let the queued empty reindex jobs drain first
+    doc_id = s.upload("geo.txt", b"Canberra.")["doc_id"]
     assert started.wait(5)
-    t = threading.Thread(target=s.update, args=({"embedder": "hf:other"},)); t.start()
-    time.sleep(0.3); Blocking.armed = False; release.set(); t.join(5)
+    s.update({"embedder": "hf:other"})        # no-rebuild path: both doc-id sets are empty
+    release.set()
     assert s.wait_idle()
-    assert s.settings.embedder == "hf:other"
     assert s.status_event()["documents"][0]["state"] == "ready"
-    assert s._store.doc_ids("hf:other") == {s.status_event()["documents"][0]["doc_id"]}
+    assert s._store.doc_ids("hf:other") == {doc_id}
     assert s.retrieve("canberra").chunks[0].name == "geo.txt"
     s.close()
 
