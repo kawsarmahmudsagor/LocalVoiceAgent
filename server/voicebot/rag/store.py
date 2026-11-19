@@ -58,18 +58,22 @@ class ChunkStore:
         )
 
     def add(self, slug: str, doc_id: str, name: str, chunks: list[str],
-            embeddings: list[list[float]]) -> None:
+            embeddings: list[list[float]], *, start: int = 0) -> None:
+        """Add chunks numbered from ``start``; sliced to Chroma's max batch size."""
         if not chunks:
             return
         col = self._get(slug)
         if col is None:
             raise KeyError(f"no collection for embedder {slug!r}; call reset() first")
-        col.add(
-            ids=[f"{doc_id}:{n}" for n in range(len(chunks))],
-            documents=chunks,
-            embeddings=embeddings,
-            metadatas=[{"doc_id": doc_id, "name": name, "chunk": n} for n in range(len(chunks))],
-        )
+        step = max(1, int(self._client.get_max_batch_size()))
+        for i in range(0, len(chunks), step):
+            nums = range(start + i, start + min(i + step, len(chunks)))
+            col.add(
+                ids=[f"{doc_id}:{n}" for n in nums],
+                documents=chunks[i:i + step],
+                embeddings=embeddings[i:i + step],
+                metadatas=[{"doc_id": doc_id, "name": name, "chunk": n} for n in nums],
+            )
 
     def delete_doc(self, slug: str, doc_id: str) -> None:
         col = self._get(slug)

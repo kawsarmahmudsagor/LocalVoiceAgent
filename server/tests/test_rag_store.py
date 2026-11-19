@@ -36,3 +36,27 @@ def test_doc_ids(tmp_path):
     s.add("hf:x", "d2", "b.txt", ["c"], [[1.0, 0.0]])
     assert s.doc_ids("hf:x") == {"d1", "d2"}
     s.delete_doc("hf:x", "d1"); assert s.doc_ids("hf:x") == {"d2"}
+
+
+def test_add_slices_by_client_max_batch(tmp_path, monkeypatch):
+    s = ChunkStore(tmp_path); s.reset("hf:x", dim=2, chunk_size=800, chunk_overlap=120)
+    monkeypatch.setattr(s._client, "get_max_batch_size", lambda: 3)
+    from chromadb.api.models.Collection import Collection
+    sizes, real_add = [], Collection.add
+
+    def spy(self, *a, **kw):
+        sizes.append(len(kw["ids"])); return real_add(self, *a, **kw)
+    monkeypatch.setattr(Collection, "add", spy)
+    texts = [f"t{n}" for n in range(8)]
+    s.add("hf:x", "d1", "a.txt", texts, [[1.0, 0.0]] * 8)
+    assert sizes == [3, 3, 2] and s.count("hf:x") == 8
+    hits = s.query("hf:x", [1.0, 0.0], 8)
+    assert sorted(h.chunk for h in hits) == list(range(8)) and {h.text for h in hits} == set(texts)
+
+
+def test_add_with_start_offset(tmp_path):
+    s = ChunkStore(tmp_path); s.reset("hf:x", dim=2, chunk_size=800, chunk_overlap=120)
+    s.add("hf:x", "d1", "a.txt", ["a", "b"], [[1.0, 0.0], [0.0, 1.0]])
+    s.add("hf:x", "d1", "a.txt", ["c"], [[1.0, 0.0]], start=2)
+    assert s.count("hf:x") == 3
+    assert sorted(h.chunk for h in s.query("hf:x", [1.0, 0.0], 3)) == [0, 1, 2]
