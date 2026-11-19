@@ -12,12 +12,13 @@ dependencies = [
     "uvicorn[standard]",
     "python-dotenv",
     "openai>=1.40",
+    "python-multipart",  # the RAG upload route is always registered
 ]
 
 [project.optional-dependencies]
 transformers = ["transformers", "accelerate", "bitsandbytes>=0.45"]
 dev = ["pytest", "httpx"]
-rag = ["chromadb", "sentence-transformers", "pypdf", "python-docx", "python-multipart"]
+rag = ["chromadb", "sentence-transformers", "pypdf", "python-docx"]
 
 [tool.setuptools.packages.find]
 include = ["voicebot*"]
