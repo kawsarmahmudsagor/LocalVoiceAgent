@@ -13,7 +13,7 @@ fi
 step "Install CUDA torch"
 uv pip install --python .venv -r RealtimeSTT/requirements-gpu-torch.txt
 step "Install RealtimeSTT[faster-whisper], RealtimeTTS[kokoro], server[dev]"
-uv pip install --python .venv -e "RealtimeSTT[faster-whisper]" -e "RealtimeTTS[kokoro]" -e "server[dev]"
+uv pip install --python .venv -e "RealtimeSTT[faster-whisper]" -e "RealtimeTTS[kokoro]" -e "server[dev,rag]"
 # A dependency may have pulled in another torch build; put the CUDA one back.
 step "Re-assert CUDA torch"
 uv pip install --python .venv -r RealtimeSTT/requirements-gpu-torch.txt

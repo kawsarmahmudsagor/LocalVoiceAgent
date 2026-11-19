@@ -17,6 +17,7 @@ dependencies = [
 [project.optional-dependencies]
 transformers = ["transformers", "accelerate", "bitsandbytes>=0.45"]
 dev = ["pytest", "httpx"]
+rag = ["chromadb", "sentence-transformers", "pypdf", "python-docx", "python-multipart"]
 
 [tool.setuptools.packages.find]
 include = ["voicebot*"]
