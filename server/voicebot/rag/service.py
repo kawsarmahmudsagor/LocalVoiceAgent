@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import queue
 import threading
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable
@@ -65,6 +66,11 @@ class RagService:
         self._total = 0
         self._done = 0
         self._thread: threading.Thread | None = None
+        # Queries take priority over the indexer (spec §4.2): retrieve() registers here before
+        # taking _lock, and the worker waits for zero before each batch. RLock is not fair, so
+        # without this a waiting query could lose the lock to the worker batch after batch.
+        self._qcv = threading.Condition()
+        self._queries_waiting = 0
 
     # -- lifecycle ----------------------------------------------------
     @property
@@ -216,7 +222,7 @@ class RagService:
         self._emit(self.config_event())
 
     def retrieve(self, query: str) -> Retrieval:
-        with self._lock:
+        with self._query_priority(), self._lock:
             s = self._settings
             if not s.enabled or self._store is None:
                 return EMPTY
@@ -293,6 +299,22 @@ class RagService:
             return self._cv.wait_for(lambda: self._pending == 0, timeout)
 
     # -- internals ----------------------------------------------------
+    @contextmanager
+    def _query_priority(self):
+        with self._qcv:
+            self._queries_waiting += 1
+        try:
+            yield
+        finally:
+            with self._qcv:
+                self._queries_waiting -= 1
+                if self._queries_waiting == 0:
+                    self._qcv.notify_all()
+
+    def _yield_to_queries(self) -> None:
+        with self._qcv:
+            self._qcv.wait_for(lambda: self._queries_waiting == 0)
+
     def _dim(self, emb: Embedder) -> int:
         if emb.dim is None:
             emb.embed(["probe"], "document")
@@ -381,21 +403,39 @@ class RagService:
                 if gen == self._gen:
                     self._fail(doc_id, str(exc) or type(exc).__name__)
             return
-        vectors: list[list[float]] = []
+        # One batch per lock hold: embed it and write it. The embed stays under the lock
+        # (an HF fast tokenizer raises "Already borrowed" if two threads use it at once).
+        # Chunks written so far are removed again if the job stops before the end, so a
+        # collection only ever holds a document's full set of chunks once it is "ready".
+        written = False
         try:
             for i in range(0, len(parts), BATCH):
-                with self._lock:  # one batch per lock hold
+                self._yield_to_queries()
+                with self._lock:
                     if self._lib.get(doc_id) is None or gen != self._gen:
+                        self._drop_partial_locked(s.embedder, doc_id, written)
                         return
-                    vectors += emb.embed(parts[i:i + BATCH], "document")
+                    vectors = emb.embed(parts[i:i + BATCH], "document")
+                    assert self._store is not None
+                    if not written:
+                        self._store.delete_doc(s.embedder, doc_id)
+                        written = True
+                    self._store.add(s.embedder, doc_id, name, parts[i:i + BATCH], vectors, start=i)
             with self._lock:
                 if self._lib.get(doc_id) is None or gen != self._gen:
+                    self._drop_partial_locked(s.embedder, doc_id, written)
                     return
-                assert self._store is not None
-                self._store.delete_doc(s.embedder, doc_id)
-                self._store.add(s.embedder, doc_id, name, parts, vectors)
                 self._lib.set_state(doc_id, "ready", len(parts))
         except Exception as exc:  # noqa: BLE001
             with self._lock:
+                self._drop_partial_locked(s.embedder, doc_id, written)
                 if self._lib.get(doc_id) is not None and gen == self._gen:
                     self._fail(doc_id, str(exc) or type(exc).__name__)
+
+    def _drop_partial_locked(self, slug: str, doc_id: str, written: bool) -> None:
+        # Only this worker writes chunks, so whatever this doc has in ``slug`` is ours.
+        if written and self._store is not None:
+            try:
+                self._store.delete_doc(slug, doc_id)
+            except Exception:  # noqa: BLE001
+                log.exception("could not drop partial chunks for %s", doc_id)

@@ -131,3 +131,60 @@ def test_deleted_doc_not_resurrected_by_switching_back(svc):     # Review Focus 
     svc.update({"embedder": "hf:BAAI/bge-small-en-v1.5"}); svc.wait_idle()
     ctx = svc.retrieve("canberra").context
     assert "beta" in ctx and "alpha" not in ctx
+
+
+def test_query_waits_at_most_one_batch_not_the_whole_job(tmp_path):     # spec §4.2
+    import threading
+    import time
+    from voicebot.rag.service import BATCH
+
+    class SlowEmbedder(FakeEmbedder):
+        def __init__(self, slug):
+            super().__init__(slug); self.calls = 0
+        def embed(self, texts, kind):
+            if kind == "document":
+                time.sleep(0.05); self.calls += 1
+            return super().embed(texts, kind)
+
+    s = RagService(tmp_path, RagSettings(enabled=True, chunk_size=200, chunk_overlap=0),
+                   make_embedder=SlowEmbedder); s.start()
+    s.upload("geo.txt", b"Canberra."); assert s.wait_idle()
+    s.upload("big.txt", ("x" * 199 + " ").encode() * (20 * BATCH))      # ~20 batches, ~1 s of embedding
+    emb = s._embedder
+    deadline = time.monotonic() + 5
+    while emb.calls < 4 and time.monotonic() < deadline:
+        time.sleep(0.005)
+    assert emb.calls >= 4
+    calls_left = 20 + 1 - emb.calls          # batches still to embed when the query arrives
+    t0 = time.monotonic(); s.retrieve("canberra"); waited = time.monotonic() - t0
+    # one 50 ms batch plus the query is the budget; 0.3 s leaves room for a slow CI box
+    assert waited < 0.3, f"retrieve waited {waited:.2f} s ({calls_left} batches were still to go)"
+    assert s.wait_idle(10)
+    assert {d["name"]: d["state"] for d in s.status_event()["documents"]}["big.txt"] == "ready"
+    s.close()
+
+
+def test_switch_mid_job_leaves_no_partial_doc_in_old_collection(tmp_path):
+    import time
+    from voicebot.rag.service import BATCH
+
+    class SlowEmbedder(FakeEmbedder):
+        calls = 0
+        def embed(self, texts, kind):
+            if kind == "document":
+                time.sleep(0.02); SlowEmbedder.calls += 1
+            return super().embed(texts, kind)
+
+    old = "hf:BAAI/bge-small-en-v1.5"
+    s = RagService(tmp_path, RagSettings(enabled=True, chunk_size=200, chunk_overlap=0),
+                   make_embedder=SlowEmbedder); s.start()
+    geo = s.upload("geo.txt", b"Canberra.")["doc_id"]; assert s.wait_idle()
+    big = s.upload("big.txt", ("x" * 199 + " ").encode() * (10 * BATCH))["doc_id"]
+    start = SlowEmbedder.calls; deadline = time.monotonic() + 5
+    while SlowEmbedder.calls < start + 3 and time.monotonic() < deadline:
+        time.sleep(0.005)
+    s.update({"embedder": "hf:other"})                 # new collection: reset + reindex
+    assert s.wait_idle(10)
+    assert s._store.doc_ids(old) == {geo}              # big.txt's partial chunks were dropped
+    assert s._store.doc_ids("hf:other") == {geo, big}
+    s.close()
