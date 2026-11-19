@@ -12,6 +12,7 @@ class FakeSession:
     def config(self): return {"llm_backend": "llamacpp", "audio_io": "browser", "model_label": "m", "voices": ["af_heart"],
                               "output_format": None, "defaults": {}}
     def close(self): self.closed = True
+    def rag_events(self): return []
     def catalog(self): return [{"slug": "whisper-small-en"}, {"slug": "kokoro"}]
 
 @pytest.fixture

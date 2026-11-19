@@ -500,7 +500,8 @@ def test_update_rag_maps_errors_and_emits_config(rag_session, rag, events):
     rag.update_error = RagError("Ollama model not pulled")
     rag_session.handle({"type": "update_rag", "embedder": "ollama:x"})
     wait_for(lambda: any(e["type"] == "error" and e["code"] == "rag_error" for e in events))
-    wait_for(lambda: types(events).count("rag_config") == 2)
+    # bad values: the session sends a fresh rag_config; a failed switch: the service does (not the session)
+    wait_for(lambda: types(events).count("rag_config") == 1)
 
 def test_update_rag_without_rag_is_bad_command(session, events):
     session.handle({"type": "update_rag", "top_k": 4})

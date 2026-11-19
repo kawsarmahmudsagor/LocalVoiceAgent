@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
 from voicebot.config import REPO_ROOT, Settings
@@ -120,27 +120,58 @@ def build_session(settings: Settings):
         voices = ["default"]
     tts_entry = models.entry("tts")
     voice = tts_entry.voice if tts_entry is not None and tts_entry.voice in voices else voices[0]
+    rag = _build_rag(s, lambda ev: holder[0]._emit(ev) if holder else None)
     session = VoiceSession(
         backend=backend, audio=audio, stream=stream,
         conversation=Conversation(s.system_prompt, s.history_turns),
         params=GenerationParams(s.llm_temperature, s.llm_top_p, s.llm_max_tokens),
         voice=voice, voices=voices, info=info, timer=timer,
         metrics_sink=lambda record: (append_jsonl(TURNS_LOG, record), append_turn_text(TURNS_TEXT_LOG, record)),
-        models=models, callbacks=callbacks)
+        models=models, callbacks=callbacks, rag=rag)
     holder.append(session)
     _close_session = session.close
     # audio.recorder, not recorder: a model switch replaces it.
-    session.close = lambda: shutdown_resources(_close_session, audio.recorder, backend)  # type: ignore[method-assign]
+    session.close = lambda: shutdown_resources(_close_session, audio.recorder, backend, rag=rag)  # type: ignore[method-assign]
     return session
 
 
+def _build_rag(s: Settings, on_event: Callable[[dict], None]):
+    """The v3 RagService, started; None if it cannot be built, so the voice bot still runs."""
+    try:
+        from functools import partial
+
+        from voicebot.rag.embedders import list_embedders, make_embedder
+        from voicebot.rag.library import RagSettings
+        from voicebot.rag.service import RagService
+
+        rag = RagService(s.rag_dir, RagSettings(embedder=s.rag_embedder),
+                         make_embedder=partial(make_embedder, device=s.rag_embed_device, ollama_url=s.ollama_url),
+                         list_embedders=partial(list_embedders, s.ollama_url),
+                         on_event=on_event, max_upload_mb=s.rag_max_upload_mb)
+    except Exception:
+        log.exception("RAG could not be built; running without it")
+        return None
+    try:
+        rag.start()
+    except Exception:
+        log.exception("RAG could not start; running without it")
+        try:
+            rag.close()
+        except Exception:
+            log.exception("rag.close failed")
+        return None
+    return rag
+
+
 def shutdown_resources(close_session: Callable[[], None], recorder, backend, *,
-                       recorder_timeout: float = 10.0) -> None:
+                       recorder_timeout: float = 10.0, rag=None) -> None:
     """Stop everything; the LLM backend (llama-server) is closed whatever else fails or hangs."""
     try:
         close_session()
     except Exception:
         log.exception("session.close failed")
+    if rag is not None:
+        _safe_call(rag.close, "rag.close")
     try:
         t = threading.Thread(target=_safe_call, args=(recorder.shutdown, "recorder.shutdown"),
                              name="stt-shutdown", daemon=True)
@@ -185,6 +216,44 @@ def create_app(settings: Settings | None = None, *,
     def get_catalog() -> list:
         return state["session"].catalog()
 
+    def _rag():
+        rag = getattr(state["session"], "rag", None)
+        if rag is None:
+            raise HTTPException(status_code=503, detail="RAG is not available")
+        return rag
+
+    @app.post("/api/rag/documents", status_code=202)
+    async def rag_upload(files: list[UploadFile]) -> list:
+        rag = _rag()
+        results = []
+        for f in files:
+            data = await f.read()
+            results.append(await asyncio.to_thread(rag.upload, f.filename or "file", data))
+        return results
+
+    @app.get("/api/rag/documents")
+    def rag_documents() -> list:
+        return _rag().status_event()["documents"]
+
+    @app.delete("/api/rag/documents/{doc_id}", status_code=204)
+    async def rag_delete(doc_id: str) -> Response:
+        if not await asyncio.to_thread(_rag().delete, doc_id):
+            raise HTTPException(status_code=404, detail="unknown document")
+        return Response(status_code=204)
+
+    @app.post("/api/rag/reindex", status_code=202)
+    async def rag_reindex() -> dict:
+        from voicebot.rag.service import RagError
+        try:
+            await asyncio.to_thread(_rag().reindex_all)
+        except RagError as e:
+            raise HTTPException(status_code=409, detail=str(e))
+        return {"state": "queued"}
+
+    @app.get("/api/rag/embedders")
+    async def rag_embedders() -> list:
+        return (await asyncio.to_thread(_rag().config_event))["embedders"]
+
     @app.websocket("/ws")
     async def ws_endpoint(ws: WebSocket) -> None:
         # Browsers do not apply CORS to WebSockets: without this check any page the user
@@ -224,6 +293,8 @@ def create_app(settings: Settings | None = None, *,
         try:
             await ws.send_json({"type": "config", **session.config()})
             await ws.send_json({"type": "catalog", "entries": session.catalog()})
+            for event in await asyncio.to_thread(session.rag_events):
+                await ws.send_json(event)
             while True:
                 msg = await ws.receive()
                 if msg["type"] == "websocket.disconnect":

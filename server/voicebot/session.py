@@ -286,20 +286,26 @@ class VoiceSession:
         def run() -> None:
             # Off the event loop: loading an embedder takes seconds.
             from voicebot.rag.service import RagError
+            # The service emits rag_config itself after a successful update and after a
+            # failed switch (RagError); the session adds one where the service did not.
             try:
                 rag.update(patch)
             except ValueError as e:
                 self._error("bad_settings", str(e))
+                self._emit_rag_config(rag)
             except RagError as e:  # the switch failed; the previous embedder stays
                 self._error("rag_error", str(e))
             except Exception as e:
                 log.exception("update_rag failed")
                 self._error("rag_error", str(e))
-            try:
-                self._emit(rag.config_event())
-            except Exception:
-                log.exception("rag config_event failed")
+                self._emit_rag_config(rag)
         self._spawn(run, "rag-update")
+
+    def _emit_rag_config(self, rag) -> None:
+        try:
+            self._emit(rag.config_event())
+        except Exception:
+            log.exception("rag config_event failed")
 
     # ---------- v2: model switching (spec §4.4) ----------
 
