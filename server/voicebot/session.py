@@ -280,6 +280,7 @@ class VoiceSession:
             return
         if self._turn_lock.locked():
             self._error("rag_busy", "Wait for the reply to finish before changing RAG settings.")
+            self._emit_rag_config(rag)  # resync the RAG tab's drafts to the unchanged settings
             return
         patch = {k: v for k, v in cmd.items() if k != "type"}
 

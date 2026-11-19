@@ -490,8 +490,11 @@ def test_update_rag_forwards_and_rejects_while_busy(rag_session, rag, events, ba
     assert rag.updates == [{"top_k": 4}]
     backend.gate = threading.Event(); rag_session.handle({"type": "send_text", "text": "x"})
     wait_for(lambda: "assistant_delta" in types(events))
+    before = types(events).count("rag_config")
     rag_session.handle({"type": "update_rag", "embedder": "ollama:nomic-embed-text"})
     assert wait_for(lambda: any(e["type"] == "error" and e["code"] == "rag_busy" for e in events))
+    # a fresh rag_config resyncs the RAG tab's drafts to the unchanged settings
+    assert wait_for(lambda: types(events).count("rag_config") == before + 1)
 
 def test_update_rag_maps_errors_and_emits_config(rag_session, rag, events):
     rag.update_error = ValueError("top_k: must be between 1 and 10")
