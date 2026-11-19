@@ -15,7 +15,7 @@ def test_voice_turn_spans():
         at(tm, c, st, t)
     r = tm.report()
     assert r["marks"]["speech_end"] == 0 and r["marks"]["endpoint"] == 600 and r["marks"]["input"] is None
-    assert r["spans"] == {"silence_wait_ms": 600, "stt_ms": 200, "llm_ttft_ms": 300, "filter_ms": 20,
+    assert r["spans"] == {"silence_wait_ms": 600, "stt_ms": 200, "retrieval_ms": None, "llm_ttft_ms": 300, "filter_ms": 20,
                           "tts_first_audio_ms": 180, "playback_ms": 40, "perceived_ms": 1340,
                           "llm_total_ms": 1100, "total_ms": 4000}
 
@@ -79,3 +79,8 @@ def test_format_turn_shows_models_and_text():
     assert lines[1].split() == ["stt_final=qwen3-asr-1-7b", "stt_realtime=nemotron-rt", "tts_model=piper"]
     assert '  heard: "What is the capital of France?"' in lines
     assert '  reply: "Paris."' in lines
+
+def test_retrieval_span_and_pure_llm_ttft():
+    t = iter([0.0, 1.0, 1.2, 1.5]); tm = TurnTimer(clock=lambda: next(t))
+    for s in ("input", "retrieval_start", "retrieval_done", "llm_first_token"): tm.mark(s)
+    sp = tm.report()["spans"]; assert (sp["retrieval_ms"], sp["llm_ttft_ms"]) == (200, 300)

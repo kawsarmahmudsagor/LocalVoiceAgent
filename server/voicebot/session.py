@@ -11,6 +11,12 @@ mark speech_end / endpoint / stt_start while listening; this module marks
 stt_done, input, llm_first_token, first_text, llm_done, tts_first_audio,
 playback_started and play_done. Each turn emits a metrics event, logs one
 "turn timing" line and passes a record to metrics_sink (logs/turns.jsonl).
+
+RAG (v3, spec §4.3): with an optional RagService that is switched on, each turn
+marks retrieval_start / retrieval_done around rag.retrieve(text) before the LLM
+call. The context goes into that request's system message only, never into
+history. A retrieval failure is reported as rag_error and the turn answers
+without context. Without RAG, turns run exactly as before.
 """
 from __future__ import annotations
 
@@ -20,7 +26,7 @@ import threading
 import time
 from dataclasses import replace
 from datetime import datetime, timezone
-from typing import Callable, Iterable, Iterator
+from typing import TYPE_CHECKING, Callable, Iterable, Iterator
 
 from voicebot.conversation import Conversation
 from voicebot.llm.base import GenerationParams, LLMError
@@ -28,12 +34,16 @@ from voicebot.speech_filter import filter_stream
 from voicebot.timing import TurnTimer
 from voicebot.tts import drain_audio_queue, list_voices, output_format as tts_output_format, set_voice
 
+if TYPE_CHECKING:  # the RAG package imports chromadb; keep it out of the session's import path
+    from voicebot.rag.service import RagService
+
 log = logging.getLogger(__name__)
 
 APOLOGY = "Sorry, something went wrong."
 PLAYBACK_MARGIN_S = 0.25  # browser playback slack after the estimated end of the audio
+SOURCE_PREVIEW_CHARS = 160  # spec §3.2: the Sources line shows the first 160 characters of each chunk
 _STRIP_PUNCT = str.maketrans("", "", string.punctuation)
-_LOG_SPANS = ("silence_wait_ms", "stt_ms", "llm_ttft_ms", "filter_ms", "tts_first_audio_ms",
+_LOG_SPANS = ("silence_wait_ms", "stt_ms", "retrieval_ms", "llm_ttft_ms", "filter_ms", "tts_first_audio_ms",
               "playback_ms", "perceived_ms", "total_ms")
 
 
@@ -53,7 +63,7 @@ class VoiceSession:
     def __init__(self, *, backend, audio, stream, conversation: Conversation, params: GenerationParams,
                  voice: str, voices: list[str], info: dict, timer: TurnTimer | None = None,
                  metrics_sink: Callable[[dict], None] | None = None, ack_timeout: float = 1.0,
-                 models=None, callbacks: dict | None = None) -> None:
+                 models=None, callbacks: dict | None = None, rag: RagService | None = None) -> None:
         self.backend, self.audio, self.stream, self.conversation = backend, audio, stream, conversation
         self.params, self.voice, self.voices, self.info = params, voice, list(voices), dict(info)
         self.timer = timer if timer is not None else TurnTimer()
@@ -77,6 +87,7 @@ class VoiceSession:
         self.models = models                  # v2 ModelManager, or None (v1: fixed models)
         self.callbacks = dict(callbacks or {})
         self._switching = threading.Lock()    # one select_model at a time
+        self.rag = rag                        # v3 RagService, or None (RAG not configured)
 
     # ---------- wiring ----------
 
@@ -117,9 +128,10 @@ class VoiceSession:
     def config(self) -> dict:
         with self._state_lock:
             p, prompt, voice = self.params, self.conversation.system_prompt, self.voice
+            template = self.conversation.rag_template
         cfg = {**self.info, "voices": list(self.voices), "output_format": self.audio.output_format,
                "defaults": {"system_prompt": prompt, "temperature": p.temperature, "top_p": p.top_p,
-                            "max_tokens": p.max_tokens, "voice": voice}}
+                            "max_tokens": p.max_tokens, "voice": voice, "rag_template": template}}
         if self.models is not None:
             m, st = self.models.current, self.models.settings
             cfg.update(stt_final=m.get("stt_final"), stt_realtime=m.get("stt_realtime", "off"), tts=m.get("tts"),
@@ -131,6 +143,12 @@ class VoiceSession:
             return []
         from dataclasses import asdict
         return [asdict(e) for e in self.models.entries.values()]
+
+    def rag_events(self) -> list[dict]:
+        """The RAG state a newly connected client needs: [] without RAG, else rag_config and rag_status."""
+        if self.rag is None:
+            return []
+        return [self.rag.config_event(), self.rag.status_event()]
 
     # ---------- commands ----------
 
@@ -145,6 +163,7 @@ class VoiceSession:
             "clear": self._clear,
             "playback_started": self._playback_started,
             "select_model": self._select_model,
+            "update_rag": self._update_rag,
         }.get(kind)  # type: ignore[arg-type]
         if handler is None:
             self._error("bad_command", f"unknown command type {kind!r}")
@@ -236,6 +255,8 @@ class VoiceSession:
             bad.append(f"unknown voice {cmd['voice']!r}")
         if "system_prompt" in cmd and not isinstance(cmd["system_prompt"], str):
             bad.append("system_prompt must be a string")
+        if "rag_template" in cmd and not (isinstance(cmd["rag_template"], str) and "{context}" in cmd["rag_template"]):
+            bad.append("rag_template must be a string containing {context}")
         if bad:
             self._error("bad_settings", "; ".join(bad))
             return
@@ -245,8 +266,40 @@ class VoiceSession:
                 self.params = replace(self.params, **changes)
             if "system_prompt" in cmd:
                 self.conversation.system_prompt = cmd["system_prompt"]
+            if "rag_template" in cmd:
+                self.conversation.rag_template = cmd["rag_template"]
             if "voice" in cmd and cmd["voice"] != self.voice:
                 self.voice = self._pending_voice = cmd["voice"]
+
+    # ---------- v3: RAG settings (spec §4.5) ----------
+
+    def _update_rag(self, cmd: dict) -> None:
+        rag = self.rag
+        if rag is None:
+            self._error("bad_command", "RAG is not available")
+            return
+        if self._turn_lock.locked():
+            self._error("rag_busy", "Wait for the reply to finish before changing RAG settings.")
+            return
+        patch = {k: v for k, v in cmd.items() if k != "type"}
+
+        def run() -> None:
+            # Off the event loop: loading an embedder takes seconds.
+            from voicebot.rag.service import RagError
+            try:
+                rag.update(patch)
+            except ValueError as e:
+                self._error("bad_settings", str(e))
+            except RagError as e:  # the switch failed; the previous embedder stays
+                self._error("rag_error", str(e))
+            except Exception as e:
+                log.exception("update_rag failed")
+                self._error("rag_error", str(e))
+            try:
+                self._emit(rag.config_event())
+            except Exception:
+                log.exception("rag config_event failed")
+        self._spawn(run, "rag-update")
 
     # ---------- v2: model switching (spec §4.4) ----------
 
@@ -408,6 +461,19 @@ class VoiceSession:
             params = self.params
             voice, self._pending_voice = self._pending_voice, None
             messages = self.conversation.messages(text)
+        rag_settings = self.rag.settings if self.rag is not None else None  # the RAG switch at turn start
+        rag_on = rag_settings is not None and rag_settings.enabled
+        rag_fields: dict = {
+            "rag_enabled": rag_on,
+            "rag_embedder": rag_settings.embedder if rag_on else None,
+            "rag_top_k": rag_settings.top_k if rag_on else None,
+            "rag_min_score": rag_settings.min_score if rag_on else None,
+            "rag_max_context_chars": rag_settings.max_context_chars if rag_on else None,
+            "rag_chunk_size": rag_settings.chunk_size if rag_on else None,
+            "rag_chunk_overlap": rag_settings.chunk_overlap if rag_on else None,
+            "rag_chunks_used": 0,
+            "rag_context_chars": 0,
+        }
         parts: list[str] = []
         errors: list[BaseException] = []
         consumed: list[bool] = []  # set once TTS starts reading the LLM stream
@@ -451,6 +517,8 @@ class VoiceSession:
             if voice:
                 set_voice(self.stream, voice)
             self._set_status("thinking")
+            if rag_on:
+                messages = self._retrieve(text, turn_id, rag_fields) or messages
             self.stream.feed(tokens())
             audio_seconds = self.audio.play(self.stream, on_first_audio, on_sentence)
             if not consumed and not stop_event.is_set():
@@ -481,7 +549,7 @@ class VoiceSession:
             if reply:
                 self.conversation.add_exchange(text, reply)
             self._emit({"type": "assistant_done", "text": reply, "interrupted": interrupted})
-            self._finish_metrics(turn_id, source, interrupted, params, reply, text)
+            self._finish_metrics(turn_id, source, interrupted, params, reply, text, rag_fields)
         except Exception as e:
             log.exception("turn %d failed", turn_id)
             self._error("llm_error", str(e))
@@ -492,6 +560,31 @@ class VoiceSession:
             self.timer.reset()
             self.audio.mute_input(False)
             self._set_status("listening" if self._listening else "idle")
+
+    def _retrieve(self, text: str, turn_id: int, rag_fields: dict) -> list[dict] | None:
+        """Retrieve context for this turn (spec §4.3). Returns the messages with the context in the
+        system message, or None when no context was found. Never raises: a failure is reported
+        as rag_error and the turn answers without context."""
+        assert self.rag is not None
+        self.timer.mark("retrieval_start")
+        try:
+            result = self.rag.retrieve(text)
+        except Exception as e:
+            log.warning("turn %d: RAG retrieval failed: %s", turn_id, e)
+            self.timer.mark("retrieval_done")
+            rag_fields["rag_error"] = str(e)
+            self._error("rag_error", str(e))
+            return None
+        self.timer.mark("retrieval_done")
+        if not result.context or not result.chunks:
+            return None
+        rag_fields.update(rag_chunks_used=len(result.chunks), rag_context_chars=len(result.context))
+        with self._state_lock:
+            messages = self.conversation.messages(text, context=result.context)
+        self._emit({"type": "rag_sources", "turn_id": turn_id, "sources": [
+            {"name": h.name, "chunk": h.chunk, "score": h.score, "preview": h.text[:SOURCE_PREVIEW_CHARS]}
+            for h in result.chunks]})
+        return messages
 
     def _wait_for_browser_playback(self, audio_seconds: float | None, stop_event: threading.Event) -> None:
         """Browser mode: Kokoro synthesizes faster than real time, so play() returns while the
@@ -509,7 +602,7 @@ class VoiceSession:
             stop_event.wait(remaining)
 
     def _finish_metrics(self, turn_id: int, source: str, interrupted: bool, params: GenerationParams,
-                        reply: str, transcript: str) -> None:
+                        reply: str, transcript: str, rag_fields: dict | None = None) -> None:
         report = self.timer.report()
         metrics = {"type": "metrics", "turn_id": turn_id, "source": source, "interrupted": interrupted, **report}
         self._emit(metrics)
@@ -526,6 +619,7 @@ class VoiceSession:
             m = self.models.current
             record.update(stt_final=m.get("stt_final"), stt_realtime=m.get("stt_realtime", "off"),
                           tts_model=m.get("tts"), runtime=self.models.runtime())
+        record.update(rag_fields or {"rag_enabled": False})
         try:
             self.metrics_sink(record)
         except Exception:

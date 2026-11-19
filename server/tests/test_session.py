@@ -5,6 +5,10 @@ from voicebot.conversation import Conversation
 from voicebot.llm.base import GenerationParams, LLMError
 from voicebot.session import APOLOGY, VoiceSession, is_noise
 from voicebot.timing import TurnTimer
+from voicebot.rag.embedders import EmbedderError
+from voicebot.rag.library import RagSettings
+from voicebot.rag.service import EMPTY, RagError, Retrieval
+from voicebot.rag.store import Hit
 
 
 # ---------- fakes ----------
@@ -95,6 +99,21 @@ class FakeBackend:
     def close(self): pass
 
 
+class FakeRag:
+    def __init__(self):
+        self.settings, self.result, self.error, self.updates = RagSettings(enabled=True), EMPTY, None, []
+        self.queries, self.update_error = [], None
+    def retrieve(self, q):
+        self.queries.append(q)
+        if self.error: raise self.error
+        return self.result
+    def update(self, patch):
+        if self.update_error: raise self.update_error
+        self.updates.append(patch)
+    def config_event(self): return {"type": "rag_config"}
+    def status_event(self): return {"type": "rag_status"}
+
+
 def wait_for(pred, timeout=2.0):
     end = time.monotonic() + timeout
     while time.monotonic() < end:
@@ -145,6 +164,12 @@ def make(backend, audio, stream, conv, recorder, events, timer, sink):
 
 @pytest.fixture
 def session(make): return make()
+
+@pytest.fixture
+def rag(): return FakeRag()
+
+@pytest.fixture
+def rag_session(make, rag): return make(rag=rag)
 
 @pytest.fixture
 def session_with_texts(request, make, recorder):
@@ -404,3 +429,85 @@ def test_metrics_record_keeps_transcript_and_reply(session_with_models, sink):
     session_with_models.handle({"type": "send_text", "text": "hello there"}); wait_for(lambda: sink)
     assert sink[0]["transcript"] == "hello there"
     assert sink[0]["reply"] and len(sink[0]["reply"]) == sink[0]["reply_chars"]
+
+
+# ---------- v3: RAG (Task 7) ----------
+
+def test_rag_context_sources_and_timing(rag_session, rag, backend, events, sink):
+    rag.result = Retrieval([Hit("d1", "geo.txt", 0, "Canberra is the capital.", 0.82)], "[geo.txt, part 1]\nCanberra is the capital.")
+    rag_session.handle({"type": "send_text", "text": "Capital?"}); wait_for(lambda: sink)
+    assert "Canberra is the capital." in backend.calls[0][0][0]["content"]
+    src = next(e for e in events if e["type"] == "rag_sources")
+    assert src["sources"] == [{"name": "geo.txt", "chunk": 0, "score": 0.82, "preview": "Canberra is the capital."}]
+    assert sink[0]["spans"]["retrieval_ms"] is not None and sink[0]["rag_chunks_used"] == 1
+    assert sink[0]["rag_embedder"] == rag.settings.embedder
+
+def test_rag_sources_before_llm_and_history_has_no_context(rag_session, rag, events, conv, sink):
+    rag.result = Retrieval([Hit("d1", "a.txt", 2, "x" * 300, 0.7)], "[a.txt, part 3]\n" + "x" * 300)
+    rag_session.handle({"type": "send_text", "text": "Q"}); wait_for(lambda: sink)
+    t = types(events)
+    assert t.index("rag_sources") < t.index("assistant_delta")
+    src = next(e for e in events if e["type"] == "rag_sources")
+    assert src["turn_id"] == 1 and len(src["sources"][0]["preview"]) == 160
+    assert conv.turns == [("Q", "Hello there.")] and rag.queries == ["Q"]
+    r = sink[0]
+    assert r["rag_enabled"] is True and r["rag_context_chars"] == len(rag.result.context)
+    assert (r["rag_top_k"], r["rag_min_score"], r["rag_max_context_chars"], r["rag_chunk_size"],
+            r["rag_chunk_overlap"]) == (3, 0.5, 2000, 800, 120)
+    assert "rag_error" not in r
+
+def test_rag_empty_result_sends_no_sources(rag_session, rag, backend, events, sink):
+    rag_session.handle({"type": "send_text", "text": "Hi"}); wait_for(lambda: sink)
+    assert "rag_sources" not in types(events) and backend.calls[0][0][0]["content"] == "SYS"
+    assert sink[0]["rag_chunks_used"] == 0 and sink[0]["rag_context_chars"] == 0
+
+def test_rag_disabled_skips_retrieval(rag_session, rag, sink):
+    rag.settings = RagSettings(enabled=False)
+    rag_session.handle({"type": "send_text", "text": "Hi"}); wait_for(lambda: sink)
+    assert rag.queries == [] and sink[0]["rag_enabled"] is False and sink[0]["rag_embedder"] is None
+    assert sink[0]["spans"]["retrieval_ms"] is None
+
+def test_rag_failure_still_answers(rag_session, rag, events, sink):
+    rag.error = EmbedderError("Ollama not reachable at http://h")
+    rag_session.handle({"type": "send_text", "text": "Hi"}); wait_for(lambda: sink)
+    assert any(e["type"] == "error" and e["code"] == "rag_error" for e in events)
+    assert sink[0]["reply"] and sink[0]["rag_error"].startswith("Ollama not reachable")
+
+def test_update_rag_forwards_and_rejects_while_busy(rag_session, rag, events, backend):
+    rag_session.handle({"type": "update_rag", "top_k": 4}); wait_for(lambda: rag.updates)
+    assert rag.updates == [{"top_k": 4}]
+    backend.gate = threading.Event(); rag_session.handle({"type": "send_text", "text": "x"})
+    wait_for(lambda: "assistant_delta" in types(events))
+    rag_session.handle({"type": "update_rag", "embedder": "ollama:nomic-embed-text"})
+    assert wait_for(lambda: any(e["type"] == "error" and e["code"] == "rag_busy" for e in events))
+
+def test_update_rag_maps_errors_and_emits_config(rag_session, rag, events):
+    rag.update_error = ValueError("top_k: must be between 1 and 10")
+    rag_session.handle({"type": "update_rag", "top_k": 99})
+    wait_for(lambda: any(e["type"] == "error" and e["code"] == "bad_settings" for e in events))
+    rag.update_error = RagError("Ollama model not pulled")
+    rag_session.handle({"type": "update_rag", "embedder": "ollama:x"})
+    wait_for(lambda: any(e["type"] == "error" and e["code"] == "rag_error" for e in events))
+    wait_for(lambda: types(events).count("rag_config") == 2)
+
+def test_update_rag_without_rag_is_bad_command(session, events):
+    session.handle({"type": "update_rag", "top_k": 4})
+    assert events[-1]["type"] == "error" and events[-1]["code"] == "bad_command"
+
+def test_rag_events(session, rag_session):
+    assert session.rag is None and session.rag_events() == []
+    assert rag_session.rag_events() == [{"type": "rag_config"}, {"type": "rag_status"}]
+
+def test_rag_template_needs_context_placeholder(session, events):
+    session.handle({"type": "update_settings", "rag_template": "no placeholder"})
+    assert events[-1]["code"] == "bad_settings" and "{context}" in events[-1]["message"]
+
+def test_rag_template_update_and_default(session, conv):
+    assert session.config()["defaults"]["rag_template"] == conv.rag_template
+    session.handle({"type": "update_settings", "rag_template": "Use {notes}: {context}"})
+    assert conv.rag_template == "Use {notes}: {context}"
+    assert session.config()["defaults"]["rag_template"] == "Use {notes}: {context}"
+
+def test_session_without_rag_logs_rag_off(session, sink):
+    session.handle({"type": "send_text", "text": "Hi"}); wait_for(lambda: sink)
+    assert sink[0]["rag_enabled"] is False and sink[0]["spans"]["retrieval_ms"] is None

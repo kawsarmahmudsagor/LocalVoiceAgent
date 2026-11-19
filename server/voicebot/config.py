@@ -17,6 +17,11 @@ DEFAULT_SYSTEM_PROMPT = (
     "the way you would say them."
 )
 
+DEFAULT_RAG_TEMPLATE = (
+    "Answer from these notes when they are relevant. If they do not cover the question, "
+    "answer normally and do not mention them.\n\n{context}"
+)
+
 T = TypeVar("T")
 
 
@@ -84,6 +89,11 @@ class Settings:
     tts_fast_sentence_fragment: bool = False
     tts_sentence_silence_ms: int = 0
     kokoro_speed: float = 1.0
+    rag_dir: Path = REPO_ROOT / "data" / "rag"
+    rag_embedder: str = "hf:BAAI/bge-small-en-v1.5"
+    rag_embed_device: str = "cuda"
+    ollama_url: str = "http://localhost:11434"
+    rag_max_upload_mb: int = 25
 
     @classmethod
     def load(cls, env: Mapping[str, str] | None = None, env_file: Path | None = None, *,
@@ -167,4 +177,9 @@ class Settings:
             tts_fast_sentence_fragment=get("TTS_FAST_SENTENCE_FRAGMENT", "false", _bool),
             tts_sentence_silence_ms=get("TTS_SENTENCE_SILENCE_MS", "0", int),
             kokoro_speed=get("KOKORO_SPEED", "1.0", float),
+            rag_dir=path_or_none("RAG_DIR") or REPO_ROOT / "data" / "rag",
+            rag_embedder=get("RAG_EMBEDDER", "hf:BAAI/bge-small-en-v1.5"),
+            rag_embed_device=get("RAG_EMBED_DEVICE", "cuda"),
+            ollama_url=get("OLLAMA_URL", "http://localhost:11434").rstrip("/"),
+            rag_max_upload_mb=get("RAG_MAX_UPLOAD_MB", "25", int),
         )

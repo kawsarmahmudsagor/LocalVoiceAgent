@@ -21,6 +21,8 @@ STAGES: tuple[str, ...] = (
     "stt_start",         # final transcription starts
     "stt_done",          # recorder.text() returned
     "input",             # typed send_text received (typed turns only)
+    "retrieval_start",   # RAG retrieval starts (only when RAG is on)
+    "retrieval_done",    # retriever returned or failed
     "llm_first_token",   # first raw backend chunk
     "first_text",        # first speakable chunk after speech_filter
     "tts_first_audio",   # first TTS audio chunk produced
@@ -30,7 +32,7 @@ STAGES: tuple[str, ...] = (
 )
 
 SPANS: tuple[str, ...] = (
-    "silence_wait_ms", "stt_ms", "llm_ttft_ms", "filter_ms", "tts_first_audio_ms",
+    "silence_wait_ms", "stt_ms", "retrieval_ms", "llm_ttft_ms", "filter_ms", "tts_first_audio_ms",
     "playback_ms", "perceived_ms", "llm_total_ms", "total_ms",
 )
 
@@ -88,11 +90,13 @@ class TurnTimer:
         if origin is None:
             return {"marks": {s: None for s in STAGES}, "spans": {s: None for s in SPANS}}
         inp = g("input") if "input" in m else g("stt_done")
+        llm_start = g("retrieval_done") if "retrieval_done" in m else inp  # the LLM's own time to first token
         heard = g("playback_started") if "playback_started" in m else g("tts_first_audio")
         spans = {
             "silence_wait_ms": _ms(g("speech_end"), g("endpoint")),
             "stt_ms": _ms(g("endpoint"), g("stt_done")),
-            "llm_ttft_ms": _ms(inp, g("llm_first_token")),
+            "retrieval_ms": _ms(g("retrieval_start"), g("retrieval_done")),
+            "llm_ttft_ms": _ms(llm_start, g("llm_first_token")),
             "filter_ms": _ms(g("llm_first_token"), g("first_text")),
             "tts_first_audio_ms": _ms(g("first_text"), g("tts_first_audio")),
             "playback_ms": _ms(g("tts_first_audio"), g("playback_started")),
@@ -118,7 +122,9 @@ _MODEL_KEYS = ("stt_final", "stt_realtime", "tts_model")
 _CONTEXT_KEYS = ("llm_backend", "model_label", "audio_io", "stt_model", "stt_device", "voice",
                  "temperature", "top_p", "max_tokens", "reply_chars",
                  "kokoro_trim_silence", "kokoro_extra_end_ms", "tts_first_fragment_words",
-                 "tts_fast_sentence_fragment", "tts_sentence_silence_ms", "kokoro_speed")
+                 "tts_fast_sentence_fragment", "tts_sentence_silence_ms", "kokoro_speed",
+                 "rag_enabled", "rag_embedder", "rag_top_k", "rag_min_score", "rag_max_context_chars",
+                 "rag_chunk_size", "rag_chunk_overlap", "rag_chunks_used", "rag_context_chars", "rag_error")
 
 
 def fmt_ms(ms: int | None) -> str:

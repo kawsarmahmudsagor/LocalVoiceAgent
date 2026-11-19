@@ -64,3 +64,9 @@ def test_tts_pacing_settings():
 def test_default_prompt_asks_for_speakable_text():
     from voicebot.config import DEFAULT_SYSTEM_PROMPT
     assert "numbers" in DEFAULT_SYSTEM_PROMPT and "abbreviations" in DEFAULT_SYSTEM_PROMPT
+
+def test_rag_settings_defaults():
+    s = Settings.load(env={})
+    assert (s.rag_embedder, s.rag_embed_device, s.ollama_url, s.rag_max_upload_mb) == (
+        "hf:BAAI/bge-small-en-v1.5", "cuda", "http://localhost:11434", 25)
+    assert s.rag_dir == REPO_ROOT / "data" / "rag"
