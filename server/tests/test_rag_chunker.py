@@ -20,8 +20,11 @@ def test_no_chunk_exceeds_size_and_overlap_is_shared():
 
 
 def test_unbroken_text_is_hard_split():          # Review Focus 3
-    out = chunk("x" * 1000, 300, 50)
-    assert all(len(c) <= 300 for c in out) and "".join(out).count("x") >= 1000
+    text = "".join(chr(97 + i % 26) + str(i % 10) for i in range(500))   # 1000 chars, no spaces
+    out = chunk(text, 300, 50)
+    assert len(out) > 1 and all(len(c) <= 300 for c in out)
+    assert all(a[-50:] == b[:50] for a, b in zip(out, out[1:]))
+    assert out[0].startswith(text[:50]) and out[-1].endswith(text[-20:])
 
 
 def test_whitespace_normalised_and_no_empty_chunks():

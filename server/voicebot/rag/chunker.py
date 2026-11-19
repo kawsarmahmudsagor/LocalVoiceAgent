@@ -10,20 +10,20 @@ def _normalise(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
-def _split(text: str, size: int, seps: list[str]) -> list[str]:
-    """Split into pieces of at most `size` chars; separators stay attached to the piece before."""
+def _split(text: str, size: int, seps: list[str], hard: int) -> list[str]:
+    """Split into pieces of at most `size` chars (hard splits use `hard`, leaving room for overlap); separators stay attached to the piece before."""
     if len(text) <= size:
         return [text]
     for i, sep in enumerate(seps):
         if sep == "":
-            return [text[j:j + size] for j in range(0, len(text), size)]
+            return [text[j:j + hard] for j in range(0, len(text), hard)]
         if sep in text:
             parts = text.split(sep)
             pieces = [p + sep for p in parts[:-1]] + [parts[-1]]
             out: list[str] = []
             for piece in pieces:
                 if piece:
-                    out.extend(_split(piece, size, seps[i + 1:]))
+                    out.extend(_split(piece, size, seps[i + 1:], hard))
             return out
     return [text]
 
@@ -47,7 +47,7 @@ def chunk(text: str, size: int, overlap: int) -> list[str]:
         return []
     chunks: list[str] = []
     cur = ""
-    for piece in _split(text, size, _SEPARATORS):
+    for piece in _split(text, size, _SEPARATORS, size - overlap):
         if len(cur) + len(piece) <= size:
             cur += piece
             continue
