@@ -13,6 +13,7 @@ interface Props {
 const BREAKDOWN: [SpanName, string][] = [
   ["silence_wait_ms", "silence"],
   ["stt_ms", "stt"],
+  ["retrieval_ms", "rag"],
   ["llm_ttft_ms", "llm"],
   ["filter_ms", "filter"],
   ["tts_first_audio_ms", "tts"],

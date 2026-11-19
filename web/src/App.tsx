@@ -5,15 +5,28 @@ import { ChatTranscript } from "./components/ChatTranscript";
 import { Composer } from "./components/Composer";
 import { SettingsPanel } from "./components/SettingsPanel";
 import { StatusBar } from "./components/StatusBar";
-import type { Defaults, Role } from "./protocol";
+import { RagPanel } from "./components/RagPanel";
+import { SystemPromptPanel } from "./components/SystemPromptPanel";
+import { Tabs } from "./components/Tabs";
+import type { Defaults, RagSettings, Role } from "./protocol";
 import { createExclusive } from "./exclusive";
-import { initialState, reducer } from "./state";
+import { deleteDocument, reindexAll, uploadDocuments } from "./rag";
+import { initialState, reducer, type AppState } from "./state";
 import { VoiceSocket, socketUrl } from "./ws";
 
 const SETTINGS_DEBOUNCE_MS = 300;
+const TAB_KEY = "voicebot.tab";
+
+function initState(base: AppState): AppState {
+  try {
+    const t = window.localStorage.getItem(TAB_KEY);
+    if (t === "playground" || t === "prompt" || t === "rag") return { ...base, tab: t };
+  } catch { /* storage may be blocked */ }
+  return base;
+}
 
 export default function App() {
-  const [state, dispatch] = useReducer(reducer, initialState);
+  const [state, dispatch] = useReducer(reducer, initialState, initState);
   const socket = useRef<VoiceSocket | null>(null);
   const player = useRef<Player | null>(null);
   const playerRate = useRef<number | null>(null);
@@ -139,19 +152,50 @@ export default function App() {
     player.current?.flush();
   };
 
+  const reportRagError = (err: unknown) =>
+    dispatch({ kind: "error", message: err instanceof Error ? err.message : String(err) });
+
+  const onTab =(tab: AppState["tab"]) => {
+    dispatch({ kind: "tab", tab });
+    try { window.localStorage.setItem(TAB_KEY, tab); } catch { /* storage may be blocked */ }
+  };
+
+  const onUpdateRag = (patch: Partial<RagSettings>) => {
+    socket.current?.send({ type: "update_rag", ...patch });
+  };
+
+  const ragDisabled = state.status !== "idle" || !state.connected;
+
   return (
-    <div className="app">
-      <SettingsPanel config={state.config} settings={state.settings} onChange={onSettingsChange}
-        catalog={state.catalog} switching={state.switching} status={state.status} onSelectModel={onSelectModel} />
-      <main className="main">
-        <ChatTranscript messages={state.messages} partial={state.partial} />
-        <div className="dock">
-          <StatusBar config={state.config} switchingSlug={state.switchingSlug} connected={state.connected} status={state.status} metrics={state.metrics} error={state.error}
-            onDismissError={() => dispatch({ kind: "dismiss_error" })} />
-          <Composer status={state.status} listening={state.listening} connected={state.connected}
-            onToggleMic={() => void onToggleMic()} onSend={onSend} onStop={onStop} onClear={onClear} />
+    <div className="shell">
+      <Tabs tab={state.tab} onChange={onTab} />
+      <div className="tabpanel" role="tabpanel" id="panel-playground" aria-labelledby="tab-playground"
+        hidden={state.tab !== "playground"}>
+        <div className="app">
+          <SettingsPanel config={state.config} settings={state.settings} onChange={onSettingsChange}
+            catalog={state.catalog} switching={state.switching} status={state.status} onSelectModel={onSelectModel} />
+          <main className="main">
+            <ChatTranscript messages={state.messages} partial={state.partial} />
+            <div className="dock">
+              <StatusBar config={state.config} switchingSlug={state.switchingSlug} connected={state.connected} status={state.status} metrics={state.metrics} error={state.error}
+                onDismissError={() => dispatch({ kind: "dismiss_error" })} />
+              <Composer status={state.status} listening={state.listening} connected={state.connected}
+                onToggleMic={() => void onToggleMic()} onSend={onSend} onStop={onStop} onClear={onClear} />
+            </div>
+          </main>
         </div>
-      </main>
+      </div>
+      <div className="tabpanel scroll" role="tabpanel" id="panel-prompt" aria-labelledby="tab-prompt"
+        hidden={state.tab !== "prompt"}>
+        <SystemPromptPanel settings={state.settings} defaults={state.config?.defaults ?? null}
+          disabled={!state.connected} onChange={onSettingsChange} />
+      </div>
+      <div className="tabpanel scroll" role="tabpanel" id="panel-rag" aria-labelledby="tab-rag"
+        hidden={state.tab !== "rag"}>
+        <RagPanel rag={state.rag} disabled={ragDisabled} onUpdate={onUpdateRag}
+          onUpload={files => uploadDocuments(files)} onDelete={id => void deleteDocument(id).catch(reportRagError)}
+          onReindex={() => void reindexAll().catch(reportRagError)} />
+      </div>
     </div>
   );
 }

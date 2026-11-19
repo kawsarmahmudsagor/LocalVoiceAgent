@@ -22,6 +22,20 @@ export function ChatTranscript({ messages, partial }: { messages: ChatMessage[];
             {m.streaming && <span className="cursor" aria-hidden="true" />}
             {m.interrupted && <span className="tag">interrupted</span>}
           </div>
+          {m.sources && m.sources.length > 0 && (
+            <details className="sources">
+              <summary>Sources ({m.sources.length})</summary>
+              <ul>
+                {m.sources.map((s, i) => (
+                  <li key={`${s.name}-${s.chunk}-${i}`}>
+                    <span className="source-name">{s.name} #{s.chunk}</span>
+                    <span className="source-score"> {s.score.toFixed(2)}</span>
+                    <div className="source-preview">{s.preview}</div>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
         </div>
       ))}
       {partial && (

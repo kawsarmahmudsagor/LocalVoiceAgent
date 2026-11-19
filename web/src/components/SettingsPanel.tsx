@@ -106,12 +106,6 @@ export function SettingsPanel({ config, settings, onChange, catalog, switching, 
           onSelectModel={onSelectModel} />
       )}
 
-      <div className="field">
-        <label htmlFor="system-prompt">System prompt</label>
-        <textarea id="system-prompt" rows={7} value={settings?.system_prompt ?? ""} disabled={disabled}
-          onChange={e => onChange({ system_prompt: e.target.value })} />
-      </div>
-
       <Slider label="Temperature" value={settings?.temperature ?? 0} min={0} max={2} step={0.05} disabled={disabled}
         onChange={v => onChange({ temperature: v })} />
       <Slider label="Top P" value={settings?.top_p ?? 0} min={0} max={1} step={0.05} disabled={disabled}
