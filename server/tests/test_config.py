@@ -13,7 +13,8 @@ def test_defaults_match_spec():
     assert (s.stt_model, s.stt_device, s.stt_compute_type, s.stt_silence_sec) == ("small.en", "cuda", "int8", 0.6)
     assert s.tts_voice == "af_heart"
     assert s.system_prompt == ("You are a friendly voice assistant. Reply in one to three short spoken "
-                               "sentences. Never use lists, markdown, code blocks or emoji.")
+                               "sentences. Never use lists, markdown, code blocks or emoji. Write numbers, units and "
+                               "abbreviations as words, the way you would say them.")
     assert (s.llm_temperature, s.llm_top_p, s.llm_max_tokens, s.history_turns) == (0.7, 0.8, 256, 10)
     assert (s.web_host, s.web_port) == ("127.0.0.1", 8000)
 
@@ -53,6 +54,13 @@ def test_v2_settings_defaults():
 
 def test_tts_pacing_settings():
     s = Settings.load(env={})
-    assert (s.kokoro_trim_silence, s.kokoro_extra_end_ms, s.tts_first_fragment_words) == (False, 200, 8)
-    s = Settings.load(env={"KOKORO_TRIM_SILENCE": "true", "KOKORO_EXTRA_END_MS": "150", "TTS_FIRST_FRAGMENT_WORDS": "30"})
-    assert (s.kokoro_trim_silence, s.kokoro_extra_end_ms, s.tts_first_fragment_words) == (True, 150, 30)
+    assert (s.kokoro_trim_silence, s.kokoro_extra_end_ms, s.tts_first_fragment_words) == (False, 200, 30)
+    assert (s.tts_fast_sentence_fragment, s.tts_sentence_silence_ms, s.kokoro_speed) == (False, 0, 1.0)
+    s = Settings.load(env={"KOKORO_TRIM_SILENCE": "true", "KOKORO_EXTRA_END_MS": "150", "TTS_FIRST_FRAGMENT_WORDS": "8",
+                           "TTS_FAST_SENTENCE_FRAGMENT": "true", "TTS_SENTENCE_SILENCE_MS": "250", "KOKORO_SPEED": "0.95"})
+    assert (s.kokoro_trim_silence, s.kokoro_extra_end_ms, s.tts_first_fragment_words) == (True, 150, 8)
+    assert (s.tts_fast_sentence_fragment, s.tts_sentence_silence_ms, s.kokoro_speed) == (True, 250, 0.95)
+
+def test_default_prompt_asks_for_speakable_text():
+    from voicebot.config import DEFAULT_SYSTEM_PROMPT
+    assert "numbers" in DEFAULT_SYSTEM_PROMPT and "abbreviations" in DEFAULT_SYSTEM_PROMPT

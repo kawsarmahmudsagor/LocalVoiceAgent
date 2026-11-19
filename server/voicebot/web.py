@@ -111,7 +111,9 @@ def build_session(settings: Settings):
             "stt_silence_sec": s.stt_silence_sec,
             # TTS pacing: logged per turn so latency_report --by can compare settings.
             "kokoro_trim_silence": s.kokoro_trim_silence, "kokoro_extra_end_ms": s.kokoro_extra_end_ms,
-            "tts_first_fragment_words": s.tts_first_fragment_words}
+            "tts_first_fragment_words": s.tts_first_fragment_words,
+            "tts_fast_sentence_fragment": s.tts_fast_sentence_fragment,
+            "tts_sentence_silence_ms": s.tts_sentence_silence_ms, "kokoro_speed": s.kokoro_speed}
     try:
         voices = list_voices(stream) or ["default"]
     except Exception:

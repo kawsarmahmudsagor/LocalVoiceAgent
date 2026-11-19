@@ -172,7 +172,8 @@ def test_make_tts_from_entry():
     built = {}
     mod = NS(KokoroEngine=lambda **k: built.update(k) or "engine")
     s = tts.make_tts(Settings.load(env={}), stream_cls=lambda eng, **kw: ("stream", eng), entry=e["kokoro"], module=mod)
-    assert s == ("stream", "engine") and built == {"voice": "af_heart", "trim_silence": False, "extra_end_ms": 200}
+    assert s == ("stream", "engine") and built == {"voice": "af_heart", "trim_silence": False, "extra_end_ms": 200,
+                                                       "default_speed": 1.0}
 
 def test_set_recorder_and_output_format():
     a, r2 = BrowserAudio(Rec(), {"sample_rate": 24000, "channels": 1, "encoding": "pcm_s16le"}), Rec()
@@ -193,11 +194,11 @@ def test_make_tts_kokoro_pacing_v1_and_entry():
     seen = []
     eng = lambda **k: seen.append(k) or "engine"
     tts.make_tts(Settings.load(env={}), engine_cls=eng, stream_cls=lambda e, **kw: e)
-    assert seen[-1] == {"voice": "af_heart", "trim_silence": False, "extra_end_ms": 200}
+    assert seen[-1] == {"voice": "af_heart", "trim_silence": False, "extra_end_ms": 200, "default_speed": 1.0}
     e = by_slug(load_catalog(POOL))
     tts.make_tts(Settings.load(env={"KOKORO_TRIM_SILENCE": "true"}), stream_cls=lambda x, **kw: x, entry=e["kokoro"],
                  module=NS(KokoroEngine=eng))
-    assert seen[-1] == {"voice": "af_heart", "trim_silence": True, "extra_end_ms": 200}
+    assert seen[-1] == {"voice": "af_heart", "trim_silence": True, "extra_end_ms": 200, "default_speed": 1.0}
 
 def test_play_forces_first_fragment_after_words():
     s = Stream(); a = BrowserAudio(Rec(), {"sample_rate": 24000, "channels": 1}, play_kwargs={"force_first_fragment_after_words": 8})
@@ -205,7 +206,11 @@ def test_play_forces_first_fragment_after_words():
     sa = ServerAudio(Rec(), play_kwargs={"force_first_fragment_after_words": 8}); sa.play(s, lambda: None)
     assert s.play_kw["force_first_fragment_after_words"] == 8
     b = make_audio_io(Settings.load(env={}), Stream(), recorder_factory=lambda st, **k: Rec())
-    assert b.play_kwargs == {"force_first_fragment_after_words": 8}
+    assert b.play_kwargs == {"force_first_fragment_after_words": 30, "fast_sentence_fragment": False,
+                             "sentence_silence_duration": 0.0}
+    env = {"TTS_FAST_SENTENCE_FRAGMENT": "true", "TTS_SENTENCE_SILENCE_MS": "250"}
+    b = make_audio_io(Settings.load(env=env), Stream(), recorder_factory=lambda st, **k: Rec())
+    assert (b.play_kwargs["fast_sentence_fragment"], b.play_kwargs["sentence_silence_duration"]) == (True, 0.25)
 
 def test_browser_mode_stream_opens_no_output_device():                    # e2e: VM has no sound card
     made = []

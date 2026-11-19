@@ -13,7 +13,8 @@ REPO_ROOT: Path = Path(__file__).resolve().parents[2]
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are a friendly voice assistant. Reply in one to three short spoken sentences. "
-    "Never use lists, markdown, code blocks or emoji."
+    "Never use lists, markdown, code blocks or emoji. Write numbers, units and abbreviations as words, "
+    "the way you would say them."
 )
 
 T = TypeVar("T")
@@ -79,7 +80,10 @@ class Settings:
     llm_vram_mb: int = 7000
     kokoro_trim_silence: bool = False
     kokoro_extra_end_ms: int = 200
-    tts_first_fragment_words: int = 8
+    tts_first_fragment_words: int = 30
+    tts_fast_sentence_fragment: bool = False
+    tts_sentence_silence_ms: int = 0
+    kokoro_speed: float = 1.0
 
     @classmethod
     def load(cls, env: Mapping[str, str] | None = None, env_file: Path | None = None, *,
@@ -159,5 +163,8 @@ class Settings:
             llm_vram_mb=get("LLM_VRAM_MB", "7000", int),
             kokoro_trim_silence=get("KOKORO_TRIM_SILENCE", "false", _bool),
             kokoro_extra_end_ms=get("KOKORO_EXTRA_END_MS", "200", int),
-            tts_first_fragment_words=get("TTS_FIRST_FRAGMENT_WORDS", "8", int),
+            tts_first_fragment_words=get("TTS_FIRST_FRAGMENT_WORDS", "30", int),
+            tts_fast_sentence_fragment=get("TTS_FAST_SENTENCE_FRAGMENT", "false", _bool),
+            tts_sentence_silence_ms=get("TTS_SENTENCE_SILENCE_MS", "0", int),
+            kokoro_speed=get("KOKORO_SPEED", "1.0", float),
         )

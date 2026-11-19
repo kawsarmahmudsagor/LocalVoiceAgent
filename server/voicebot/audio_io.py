@@ -123,9 +123,14 @@ class ServerAudio:
 
 
 def play_kwargs(settings: Settings) -> dict:
-    """RealtimeTTS waits for a delimiter or force_first_fragment_after_words (default 30) before it
-    synthesizes the first fragment; a lower value starts speech sooner after a long opening sentence."""
-    return {"force_first_fragment_after_words": settings.tts_first_fragment_words}
+    """TextToAudioStream.play() pacing. fast_sentence_fragment=True synthesizes the first sentence's opening
+    fragment (cut at a comma, or after force_first_fragment_after_words) on its own, which starts speech sooner
+    but puts a pause and a pitch reset mid-sentence. RealtimeTTS/docs/llm-streaming.md: "For engines that sound
+    better with complete sentences, disable early fragments". sentence_silence_duration adds a pause after each
+    sentence."""
+    return {"force_first_fragment_after_words": settings.tts_first_fragment_words,
+            "fast_sentence_fragment": settings.tts_fast_sentence_fragment,
+            "sentence_silence_duration": settings.tts_sentence_silence_ms / 1000}
 
 
 def make_audio_io(settings: Settings, stream, *, callbacks: dict | None = None,

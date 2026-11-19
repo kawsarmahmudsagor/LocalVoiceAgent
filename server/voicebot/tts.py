@@ -40,7 +40,8 @@ def kokoro_pacing(settings: Settings) -> dict:
     """KokoroEngine trims the silence around every synthesized fragment by default, which removes the
     pauses after commas and full stops (speech runs on "in one breath"). KOKORO_TRIM_SILENCE=false keeps
     them; with trimming on, KOKORO_EXTRA_END_MS keeps a short pause at each fragment's end."""
-    return {"trim_silence": settings.kokoro_trim_silence, "extra_end_ms": settings.kokoro_extra_end_ms}
+    return {"trim_silence": settings.kokoro_trim_silence, "extra_end_ms": settings.kokoro_extra_end_ms,
+            "default_speed": settings.kokoro_speed}
 
 
 def _stream_kwargs(settings: Settings) -> dict:
