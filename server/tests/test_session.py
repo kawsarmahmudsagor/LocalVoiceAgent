@@ -467,6 +467,18 @@ def test_rag_disabled_skips_retrieval(rag_session, rag, sink):
     assert rag.queries == [] and sink[0]["rag_enabled"] is False and sink[0]["rag_embedder"] is None
     assert sink[0]["spans"]["retrieval_ms"] is None
 
+@pytest.mark.parametrize("fail", [False, True])
+def test_rag_log_names_settings_retrieve_used(rag_session, rag, sink, fail):
+    # An embedder switch that lands while retrieve() runs: the log must name the new settings.
+    def retrieve(q):
+        rag.settings = RagSettings(enabled=True, embedder="ollama:nomic-embed-text", top_k=5)
+        if fail: raise EmbedderError("down")
+        return EMPTY
+    rag.retrieve = retrieve
+    rag_session.handle({"type": "send_text", "text": "Hi"}); wait_for(lambda: sink)
+    assert (sink[0]["rag_embedder"], sink[0]["rag_top_k"]) == ("ollama:nomic-embed-text", 5)
+    assert sink[0]["rag_enabled"] is True and ("rag_error" in sink[0]) is fail
+
 def test_rag_failure_still_answers(rag_session, rag, events, sink):
     rag.error = EmbedderError("Ollama not reachable at http://h")
     rag_session.handle({"type": "send_text", "text": "Hi"}); wait_for(lambda: sink)

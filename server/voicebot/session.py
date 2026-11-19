@@ -569,13 +569,22 @@ class VoiceSession:
         self.timer.mark("retrieval_start")
         try:
             result = self.rag.retrieve(text)
+            error = None
         except Exception as e:
-            log.warning("turn %d: RAG retrieval failed: %s", turn_id, e)
-            self.timer.mark("retrieval_done")
-            rag_fields["rag_error"] = str(e)
-            self._error("rag_error", str(e))
-            return None
+            result, error = None, e
         self.timer.mark("retrieval_done")
+        # Re-read the settings now: an embedder switch that overlapped this turn may have
+        # changed what retrieve() actually used, and the log must name that.
+        s = self.rag.settings
+        rag_fields.update(rag_embedder=s.embedder, rag_top_k=s.top_k, rag_min_score=s.min_score,
+                          rag_max_context_chars=s.max_context_chars, rag_chunk_size=s.chunk_size,
+                          rag_chunk_overlap=s.chunk_overlap)
+        if error is not None:
+            log.warning("turn %d: RAG retrieval failed: %s", turn_id, error)
+            rag_fields["rag_error"] = str(error)
+            self._error("rag_error", str(error))
+            return None
+        assert result is not None
         if not result.context or not result.chunks:
             return None
         rag_fields.update(rag_chunks_used=len(result.chunks), rag_context_chars=len(result.context))
@@ -602,7 +611,7 @@ class VoiceSession:
             stop_event.wait(remaining)
 
     def _finish_metrics(self, turn_id: int, source: str, interrupted: bool, params: GenerationParams,
-                        reply: str, transcript: str, rag_fields: dict | None = None) -> None:
+                        reply: str, transcript: str, rag_fields: dict) -> None:
         report = self.timer.report()
         metrics = {"type": "metrics", "turn_id": turn_id, "source": source, "interrupted": interrupted, **report}
         self._emit(metrics)
@@ -619,7 +628,7 @@ class VoiceSession:
             m = self.models.current
             record.update(stt_final=m.get("stt_final"), stt_realtime=m.get("stt_realtime", "off"),
                           tts_model=m.get("tts"), runtime=self.models.runtime())
-        record.update(rag_fields or {"rag_enabled": False})
+        record.update(rag_fields)
         try:
             self.metrics_sink(record)
         except Exception:

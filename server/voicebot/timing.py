@@ -90,7 +90,7 @@ class TurnTimer:
         if origin is None:
             return {"marks": {s: None for s in STAGES}, "spans": {s: None for s in SPANS}}
         inp = g("input") if "input" in m else g("stt_done")
-        llm_start = g("retrieval_done") if "retrieval_done" in m else inp  # the LLM's own time to first token
+        llm_start = g("retrieval_done") if "retrieval_done" in m else inp  # LLM spans are the LLM's own time
         heard = g("playback_started") if "playback_started" in m else g("tts_first_audio")
         spans = {
             "silence_wait_ms": _ms(g("speech_end"), g("endpoint")),
@@ -101,7 +101,7 @@ class TurnTimer:
             "tts_first_audio_ms": _ms(g("first_text"), g("tts_first_audio")),
             "playback_ms": _ms(g("tts_first_audio"), g("playback_started")),
             "perceived_ms": _ms(origin, heard),
-            "llm_total_ms": _ms(inp, g("llm_done")),
+            "llm_total_ms": _ms(llm_start, g("llm_done")),
             "total_ms": _ms(origin, g("play_done")),
         }
         return {"marks": {s: _ms(origin, g(s)) for s in STAGES}, "spans": spans}

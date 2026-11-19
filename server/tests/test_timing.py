@@ -84,3 +84,11 @@ def test_retrieval_span_and_pure_llm_ttft():
     t = iter([0.0, 1.0, 1.2, 1.5]); tm = TurnTimer(clock=lambda: next(t))
     for s in ("input", "retrieval_start", "retrieval_done", "llm_first_token"): tm.mark(s)
     sp = tm.report()["spans"]; assert (sp["retrieval_ms"], sp["llm_ttft_ms"]) == (200, 300)
+
+def test_llm_total_starts_at_retrieval_done():
+    c = Clock(); tm = TurnTimer(clock=c)
+    for st, t in [("input", 10.0), ("retrieval_start", 10.1), ("retrieval_done", 10.4),
+                  ("llm_first_token", 10.7), ("llm_done", 12.4)]:
+        at(tm, c, st, t)
+    sp = tm.report()["spans"]
+    assert (sp["retrieval_ms"], sp["llm_ttft_ms"], sp["llm_total_ms"]) == (300, 300, 2000)
