@@ -1,6 +1,6 @@
-import type { CatalogEntry, Defaults, Metrics, Role, ServerConfig, ServerEvent, Status } from "./protocol";
+import type { CatalogEntry, Defaults, Metrics, RagCollection, RagDocument, RagEmbedder, RagSettings, RagSource, Role, ServerConfig, ServerEvent, Status } from "./protocol";
 
-export interface ChatMessage { id: number; role: "user" | "assistant"; text: string; streaming: boolean; interrupted: boolean }
+export interface ChatMessage { id: number; role: "user" | "assistant"; text: string; streaming: boolean; interrupted: boolean; sources?: RagSource[] }
 
 export interface AppState {
   connected: boolean;
@@ -18,6 +18,9 @@ export interface AppState {
   switchingSlug: string | null;
   /** Live realtime-STT text while the user speaks. */
   partial: string | null;
+  rag: { settings: RagSettings; embedders: RagEmbedder[]; collection: RagCollection | null;
+    documents: RagDocument[]; indexing: { done: number; total: number } | null; error: string | null } | null;
+  tab: "playground" | "prompt" | "rag";
 }
 
 export type Action =
@@ -29,6 +32,7 @@ export type Action =
   | { kind: "dismiss_error" }
   /** Playback reached a sentence of this turn's reply: show it. */
   | { kind: "spoken"; turn_id: number; text: string }
+  | { kind: "tab"; tab: AppState["tab"] }
   | { kind: "clear" };
 
 export const initialState: AppState = {
@@ -45,6 +49,8 @@ export const initialState: AppState = {
   switching: null,
   switchingSlug: null,
   partial: null,
+  rag: null,
+  tab: "playground",
 };
 
 const CONFIG_KEY: Record<Role, "stt_final" | "stt_realtime" | "tts"> = { stt_final: "stt_final", stt_realtime: "stt_realtime", tts: "tts" };
@@ -112,6 +118,25 @@ function applyServer(state: AppState, e: ServerEvent): AppState {
     }
     case "user_partial":
       return { ...state, partial: e.text };
+    case "rag_config": {
+      const prev = state.rag;
+      return { ...state, rag: { documents: [], indexing: null, ...prev, settings: e.settings, embedders: e.embedders,
+        collection: e.collection, error: e.error ?? null } };
+    }
+    case "rag_status": {
+      const prev = state.rag;
+      if (!prev) return state; // rag_config always arrives first on connect
+      return { ...state, rag: { ...prev, documents: e.documents, indexing: e.indexing } };
+    }
+    case "rag_sources": {
+      if (e.turn_id !== state.turnId) return state;
+      const last = state.messages[state.messages.length - 1];
+      if (last && last.role === "assistant") {
+        return { ...state, messages: state.messages.map(m => (m === last ? { ...m, sources: e.sources } : m)) };
+      }
+      // Sources can arrive before the first delta: open the bubble the same way assistant_delta does.
+      return { ...state, messages: addMessage(state.messages, { role: "assistant", text: "", streaming: true, interrupted: false, sources: e.sources }) };
+    }
   }
 }
 
@@ -135,6 +160,8 @@ export function reducer(state: AppState, action: Action): AppState {
       const text = cur.text ? `${cur.text} ${action.text.trim()}` : action.text.trim();
       return { ...state, messages: state.messages.map(m => (m === cur ? { ...m, text } : m)) };
     }
+    case "tab":
+      return { ...state, tab: action.tab };
     case "clear":
       return { ...state, messages: [], turnId: null };
   }

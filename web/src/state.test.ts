@@ -49,4 +49,31 @@ describe("reducer", () => {
     s = srv(s, { type: "user_partial", text: "hel" }); expect(s.partial).toBe("hel");
     s = srv(s, { type: "user_transcript", text: "hello", turn_id: 1 }); expect(s.partial).toBeNull();
   });
+  it("rag_sources attach to the current turn's reply", () => {
+    let s = srv(initialState, { type: "user_transcript", text: "q", turn_id: 2 });
+    s = srv(s, { type: "assistant_delta", text: "x" });
+    s = srv(s, { type: "rag_sources", turn_id: 2, sources: [{ name: "a.txt", chunk: 0, score: 0.8, preview: "p" }] });
+    expect(s.messages[1].sources?.[0].name).toBe("a.txt");
+    expect(srv(s, { type: "rag_sources", turn_id: 1, sources: [] }).messages[1].sources).toHaveLength(1);
+  });
+  it("rag_sources arriving first open the bubble", () => {
+    let s = srv(initialState, { type: "user_transcript", text: "q", turn_id: 2 });
+    s = srv(s, { type: "rag_sources", turn_id: 2, sources: [{ name: "a.txt", chunk: 0, score: 0.8, preview: "p" }] });
+    expect(s.messages[1]).toMatchObject({ role: "assistant", streaming: true, text: "" });
+    s = srv(s, { type: "assistant_delta", text: "x" });
+    expect(s.messages).toHaveLength(2);
+  });
+  it("rag_config and rag_status fill rag state", () => {
+    const RAG_DEFAULTS = { enabled: true, top_k: 4, min_score: 0.3, max_context_chars: 3000, chunk_size: 800, chunk_overlap: 100, embedder: "e" };
+    const DOC = { doc_id: "d", name: "a.txt", ext: ".txt", size: 1, state: "indexed", chunks: 1 };
+    let s = srv(initialState, { type: "rag_config", settings: RAG_DEFAULTS, embedders: [], collection: null });
+    s = srv(s, { type: "rag_status", documents: [DOC], indexing: { done: 1, total: 2 } });
+    expect(s.rag?.documents).toEqual([DOC]); expect(s.rag?.indexing).toEqual({ done: 1, total: 2 });
+    s = srv(s, { type: "rag_config", settings: RAG_DEFAULTS, embedders: [], collection: null, error: "boom" });
+    expect(s.rag?.documents).toEqual([DOC]); expect(s.rag?.error).toBe("boom");
+  });
+  it("tab action switches tabs", () => {
+    expect(initialState.tab).toBe("playground");
+    expect(reducer(initialState, { kind: "tab", tab: "rag" }).tab).toBe("rag");
+  });
 });
