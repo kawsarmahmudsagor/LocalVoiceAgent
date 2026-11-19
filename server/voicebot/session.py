@@ -63,7 +63,8 @@ class VoiceSession:
     def __init__(self, *, backend, audio, stream, conversation: Conversation, params: GenerationParams,
                  voice: str, voices: list[str], info: dict, timer: TurnTimer | None = None,
                  metrics_sink: Callable[[dict], None] | None = None, ack_timeout: float = 1.0,
-                 models=None, callbacks: dict | None = None, rag: RagService | None = None) -> None:
+                 models=None, callbacks: dict | None = None, rag: RagService | None = None,
+                 word_aligner=None, word_align: bool = False) -> None:
         self.backend, self.audio, self.stream, self.conversation = backend, audio, stream, conversation
         self.params, self.voice, self.voices, self.info = params, voice, list(voices), dict(info)
         self.timer = timer if timer is not None else TurnTimer()
@@ -88,6 +89,13 @@ class VoiceSession:
         self.callbacks = dict(callbacks or {})
         self._switching = threading.Lock()    # one select_model at a time
         self.rag = rag                        # v3 RagService, or None (RAG not configured)
+        # Forced word alignment for TTS engines without word timings: a voicebot.aligner.WordAligner (or None
+        # when unavailable), switched on and off from the UI. Its model loads on first use.
+        self._word_aligner = word_aligner
+        self.word_align = False
+        self._align_wanted = False
+        if word_align:
+            self._set_word_align(True)
 
     # ---------- wiring ----------
 
@@ -131,7 +139,8 @@ class VoiceSession:
             template = self.conversation.rag_template
         cfg = {**self.info, "voices": list(self.voices), "output_format": self.audio.output_format,
                "defaults": {"system_prompt": prompt, "temperature": p.temperature, "top_p": p.top_p,
-                            "max_tokens": p.max_tokens, "voice": voice, "rag_template": template}}
+                            "max_tokens": p.max_tokens, "voice": voice, "rag_template": template,
+                            "word_align": self.word_align}}
         if self.models is not None:
             m, st = self.models.current, self.models.settings
             cfg.update(stt_final=m.get("stt_final"), stt_realtime=m.get("stt_realtime", "off"), tts=m.get("tts"),
@@ -257,9 +266,13 @@ class VoiceSession:
             bad.append("system_prompt must be a string")
         if "rag_template" in cmd and not (isinstance(cmd["rag_template"], str) and "{context}" in cmd["rag_template"]):
             bad.append("rag_template must be a string containing {context}")
+        if "word_align" in cmd and not isinstance(cmd["word_align"], bool):
+            bad.append("word_align must be true or false")
         if bad:
             self._error("bad_settings", "; ".join(bad))
             return
+        if "word_align" in cmd:
+            self._set_word_align(cmd["word_align"])
         with self._state_lock:
             changes = {k: cmd[k] for k in ("temperature", "top_p", "max_tokens") if k in cmd}
             if changes:
@@ -270,6 +283,44 @@ class VoiceSession:
                 self.conversation.rag_template = cmd["rag_template"]
             if "voice" in cmd and cmd["voice"] != self.voice:
                 self.voice = self._pending_voice = cmd["voice"]
+
+    # ---------- forced word alignment ----------
+
+    def _set_word_align(self, on: bool) -> None:
+        """Switch forced word alignment. The first switch-on loads the model (about 1.2 GB) off the event loop;
+        the browser hears {"type": "word_align", "state": "loading" | "ready" | "off" | "error"}."""
+        self._align_wanted = on
+        if not on:
+            self.word_align = False
+            self.audio.word_aligner = None
+            self._emit({"type": "word_align", "state": "off"})
+            return
+        aligner = self._word_aligner
+        if aligner is None:
+            self._emit({"type": "word_align", "state": "error",
+                        "message": "Word alignment is not available on this server; see the server log."})
+            return
+        if aligner.ready:
+            self._enable_word_align(aligner)
+            return
+        self._emit({"type": "word_align", "state": "loading"})
+
+        def load() -> None:
+            try:
+                aligner.load()
+            except Exception as e:
+                log.exception("loading the word alignment model failed")
+                self._align_wanted = False
+                self._emit({"type": "word_align", "state": "error", "message": f"Loading the alignment model failed: {e}"})
+                return
+            if self._align_wanted:  # still wanted: it may have been switched off while loading
+                self._enable_word_align(aligner)
+        self._spawn(load, "word-align-load")
+
+    def _enable_word_align(self, aligner) -> None:
+        self.audio.word_aligner = aligner
+        self.word_align = True
+        self._emit({"type": "word_align", "state": "ready"})
 
     # ---------- v3: RAG settings (spec §4.5) ----------
 
@@ -643,6 +694,7 @@ class VoiceSession:
             record.update(stt_final=m.get("stt_final"), stt_realtime=m.get("stt_realtime", "off"),
                           tts_model=m.get("tts"), runtime=self.models.runtime())
         record.update(rag_fields)
+        record["word_align"] = self.word_align
         try:
             self.metrics_sink(record)
         except Exception:

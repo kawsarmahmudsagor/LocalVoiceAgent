@@ -1,6 +1,9 @@
+export type WordAlignState = "off" | "loading" | "ready" | "error";
 export type Status = "idle" | "listening" | "thinking" | "speaking";
 export interface OutputFormat { sample_rate: number; channels: number; encoding: "pcm_s16le" }
-export interface Defaults { system_prompt: string; temperature: number; top_p: number; max_tokens: number; voice: string; rag_template: string }
+export interface Defaults { system_prompt: string; temperature: number; top_p: number; max_tokens: number; voice: string; rag_template: string;
+  /** Forced word alignment for TTS engines without word timings (absent: an older server). */
+  word_align?: boolean }
 export type Role = "stt_final" | "stt_realtime" | "tts";
 export interface CatalogEntry { slug: string; kind: "stt" | "tts"; role: "final" | "realtime" | null; device: "cpu" | "cuda";
   vram_mb: number; runtime: "inprocess" | "worker"; streaming: boolean }
@@ -26,7 +29,8 @@ export type ServerEvent = ({ type: "config" } & ServerConfig) | { type: "status"
   /** One sentence of the reply; at_s is where its audio starts in the reply (null: no browser playback). */
   | { type: "assistant_segment"; turn_id: number; text: string; at_s: number | null }
   /** After a sentence is synthesized: when each of its words starts (null: spread them up to end_s). */
-  | { type: "assistant_words"; turn_id: number; word_s: number[] | null; end_s: number } | { type: "assistant_done"; text: string; interrupted: boolean }
+  | { type: "assistant_words"; turn_id: number; word_s: number[] | null; end_s: number }
+  | { type: "word_align"; state: WordAlignState; message?: string } | { type: "assistant_done"; text: string; interrupted: boolean }
   | ({ type: "metrics" } & Metrics) | { type: "error"; code: string; message: string }
   | { type: "catalog"; entries: CatalogEntry[] }
   | { type: "model_status"; role: Role; slug: string; state: "loading" | "ready" | "failed"; message?: string; load_ms?: number }

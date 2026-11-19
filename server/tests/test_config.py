@@ -70,3 +70,9 @@ def test_rag_settings_defaults():
     assert (s.rag_embedder, s.rag_embed_device, s.ollama_url, s.rag_max_upload_mb) == (
         "hf:BAAI/bge-small-en-v1.5", "cuda", "http://localhost:11434", 25)
     assert s.rag_dir == REPO_ROOT / "data" / "rag"
+
+def test_word_align_settings():
+    s = Settings.load(env={})
+    assert (s.word_align, s.word_align_device) == (False, "cuda")
+    s = Settings.load(env={"WORD_ALIGN": "true", "WORD_ALIGN_DEVICE": "cpu"})
+    assert (s.word_align, s.word_align_device) == (True, "cpu")

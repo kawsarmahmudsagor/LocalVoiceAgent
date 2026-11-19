@@ -55,13 +55,14 @@ def _nbytes(chunk) -> int:
 
 
 @contextmanager
-def _count_queued(engine) -> Iterator[Callable[[], int]]:
+def _count_queued(engine, on_put: Callable[[object], None] | None = None) -> Iterator[Callable[[], int]]:
     """Count the audio bytes the engine puts on its queue during one play().
 
     Muted RealtimeTTS sends chunks to on_audio_chunk as fast as they are queued, and an engine may queue a
     whole sentence as one chunk, so the bytes *sent* when a sentence starts can trail by a sentence. Sentences
     are synthesized in order, so the bytes *queued* before a sentence starts are exactly its start offset.
-    The count wraps put() on this queue instance only; the vendored code is unchanged."""
+    The count wraps put() on this queue instance only; the vendored code is unchanged. on_put, if given,
+    sees every queued item too (forced alignment captures each sentence's audio with it)."""
     q = getattr(engine, "queue", None)
     if q is None or not hasattr(q, "put"):
         yield lambda: 0
@@ -72,6 +73,8 @@ def _count_queued(engine) -> Iterator[Callable[[], int]]:
     def put(item, *args, **kwargs):
         nonlocal count
         count += _nbytes(item)
+        if on_put is not None:
+            on_put(item)
         return real_put(item, *args, **kwargs)
 
     q.put = put
@@ -82,6 +85,13 @@ def _count_queued(engine) -> Iterator[Callable[[], int]]:
             q.put = own
         else:
             del q.put
+
+
+def _pcm_bytes(item) -> bytes | None:
+    if isinstance(item, (bytes, bytearray)):
+        return bytes(item)
+    tobytes = getattr(item, "tobytes", None)  # numpy arrays
+    return tobytes() if callable(tobytes) else None
 
 
 def _alnum(s: str) -> str:
@@ -139,6 +149,8 @@ class BrowserAudio:
         self._sink: Callable[[bytes], None] | None = None
         self._lock = threading.Lock()
         self._generation = 0  # bumped by cut(); chunks from an older play() are dropped
+        # voicebot.aligner.WordAligner, or None: word times for engines without native ones (Piper, Qwen, ...).
+        self.word_aligner = None
 
     def on_client_audio(self, data: bytes) -> None:
         if not self._muted:
@@ -172,6 +184,15 @@ class BrowserAudio:
         native = bool(getattr(engine, "provides_word_timings", False)) and not getattr(engine, "trim_silence", False)
         _drain(timings_q)  # timings left over from an earlier reply
         sentence: dict = {}
+        aligner = self.word_aligner
+        align = not native and aligner is not None and getattr(aligner, "ready", False)
+        captured: list[bytes] = []  # the current sentence's audio, for forced alignment
+
+        def capture(item) -> None:
+            if align and sentence.get("capturing"):
+                b = _pcm_bytes(item)
+                if b:
+                    captured.append(b)
         with self._lock:
             generation = self._generation
         sent = 0
@@ -193,11 +214,13 @@ class BrowserAudio:
             with self._lock:
                 return self._generation == generation
 
-        with _count_queued(engine) as queued:
+        with _count_queued(engine, capture) as queued:
             def before_sentence(text: str) -> None:
                 _drain(timings_q)
+                captured.clear()
                 at_s = queued() / bytes_per_s
-                sentence.update(at_s=at_s, engine_start=float(getattr(engine, "audio_duration", 0.0) or 0.0))
+                sentence.update(at_s=at_s, engine_start=float(getattr(engine, "audio_duration", 0.0) or 0.0),
+                                capturing=True)
                 if is_current() and on_sentence is not None:
                     on_sentence(text, at_s)
 
@@ -205,7 +228,15 @@ class BrowserAudio:
                 timings = _drain(timings_q)
                 if not sentence or not is_current() or on_words is None:
                     return
-                words = word_times(text, timings, sentence["at_s"], sentence["engine_start"]) if native else None
+                sentence["capturing"] = False
+                words = None
+                if native:
+                    words = word_times(text, timings, sentence["at_s"], sentence["engine_start"])
+                elif align:
+                    # Runs on the synthesis thread before the next sentence: tens of ms on the GPU, while
+                    # the browser is still playing audio queued earlier.
+                    rel = aligner.word_starts(text, b"".join(captured), rate, channels)
+                    words = [sentence["at_s"] + r for r in rel] if rel is not None else None
                 on_words(text, words, queued() / bytes_per_s)
 
             stream.play(on_audio_chunk=on_chunk, muted=True, before_sentence_synthesized=before_sentence,

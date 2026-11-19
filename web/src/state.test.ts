@@ -8,6 +8,16 @@ describe("reducer", () => {
     const s = srv(initialState, cfg); expect(s.settings?.temperature).toBe(0.7);
     const s2 = srv(reducer(s, { kind: "settings", patch: { temperature: 0.1 } }), cfg); expect(s2.settings?.temperature).toBe(0.1);
   });
+  it("tracks forced word alignment from config and word_align events", () => {
+    let s = srv(initialState, cfg); expect(s.wordAlign).toEqual({ state: "off", message: null });
+    s = srv(initialState, { ...cfg, defaults: { ...cfg.defaults, word_align: true } });
+    expect(s.wordAlign.state).toBe("ready");
+    s = srv(s, { type: "word_align", state: "loading" }); expect(s.wordAlign.state).toBe("loading");
+    s = srv(s, { type: "word_align", state: "error", message: "no weights" });
+    expect(s.wordAlign).toEqual({ state: "error", message: "no weights" });
+    s = srv(s, cfg);                                    // a reconnect's config doesn't hide the error
+    expect(s.wordAlign.state).toBe("error");
+  });
   it("shows sentences as they are spoken, not as the LLM writes them", () => {
     let s = srv(initialState, { type: "user_transcript", text: "hi", turn_id: 3 }); expect(s.turnId).toBe(3);
     s = srv(s, { type: "assistant_delta", text: "Hel" }); s = srv(s, { type: "assistant_delta", text: "lo. Bye." });

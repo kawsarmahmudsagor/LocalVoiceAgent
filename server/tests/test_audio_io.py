@@ -308,6 +308,29 @@ def test_word_times_handle_contractions_split_tokens_and_symbols():
     a = BrowserAudio(Rec(), {"sample_rate": 24000, "channels": 1}); a.set_sink(lambda b: None)
     assert _words(a, s)[0][1] == pytest.approx([0.0, 0.05, 0.05, 0.12])   # "—" shares the previous word's time
 
+class FakeWordAligner:
+    def __init__(self, ready=True): self.ready, self.calls = ready, []
+    def word_starts(self, text, pcm, sample_rate, channels):
+        self.calls.append((text, len(pcm), sample_rate, channels))
+        return [0.0, 0.03][: len(text.split())]
+
+def test_forced_alignment_gives_word_times_for_engines_without_them():
+    s = TimedStream([("One two.", 4800, []), ("Three four.", 4800, [])], native=False)
+    a = BrowserAudio(Rec(), {"sample_rate": 24000, "channels": 1}); a.set_sink(lambda b: None)
+    a.word_aligner = fa = FakeWordAligner()
+    seen = _words(a, s)
+    assert seen[0][1] == pytest.approx([0.0, 0.03]) and seen[1][1] == pytest.approx([0.15, 0.18])
+    # Each sentence's own audio (plus its trailing silence) is aligned, not the whole reply.
+    assert fa.calls == [("One two.", 7200, 24000, 1), ("Three four.", 7200, 24000, 1)]
+
+def test_forced_alignment_is_skipped_when_off_not_loaded_or_the_engine_has_timings():
+    a = BrowserAudio(Rec(), {"sample_rate": 24000, "channels": 1}); a.set_sink(lambda b: None)
+    a.word_aligner = fa = FakeWordAligner(ready=False)
+    assert _words(a, TimedStream([("One two.", 4800, [])], native=False))[0][1] is None
+    a.word_aligner = fa = FakeWordAligner()
+    native = TimedStream([("One two.", 4800, [("One", 0.0), ("two", 0.05)])])
+    assert _words(a, native)[0][1] == pytest.approx([0.0, 0.05]) and fa.calls == []   # native times win
+
 def test_words_are_dropped_after_cut():
     s = TimedStream([("One.", 4800, [("One", 0.0)]), ("Two.", 4800, [("Two", 0.0)])])
     a = BrowserAudio(Rec(), {"sample_rate": 24000, "channels": 1}); a.set_sink(lambda b: None)

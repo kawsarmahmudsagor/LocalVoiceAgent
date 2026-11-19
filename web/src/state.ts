@@ -1,4 +1,4 @@
-import type { CatalogEntry, Defaults, Metrics, RagCollection, RagDocument, RagEmbedder, RagSettings, RagSource, Role, ServerConfig, ServerEvent, Status } from "./protocol";
+import type { CatalogEntry, Defaults, Metrics, RagCollection, RagDocument, RagEmbedder, RagSettings, RagSource, Role, ServerConfig, ServerEvent, Status, WordAlignState } from "./protocol";
 
 export interface ChatMessage { id: number; role: "user" | "assistant"; text: string; streaming: boolean; interrupted: boolean; sources?: RagSource[] }
 
@@ -21,6 +21,8 @@ export interface AppState {
   rag: { settings: RagSettings; embedders: RagEmbedder[]; collection: RagCollection | null;
     documents: RagDocument[]; indexing: { done: number; total: number } | null; error: string | null } | null;
   tab: "playground" | "prompt" | "rag";
+  /** Forced word alignment, as the server last reported it. */
+  wordAlign: { state: WordAlignState; message: string | null };
 }
 
 export type Action =
@@ -51,6 +53,7 @@ export const initialState: AppState = {
   partial: null,
   rag: null,
   tab: "playground",
+  wordAlign: { state: "off", message: null },
 };
 
 const CONFIG_KEY: Record<Role, "stt_final" | "stt_realtime" | "tts"> = { stt_final: "stt_final", stt_realtime: "stt_realtime", tts: "tts" };
@@ -73,7 +76,11 @@ function applyServer(state: AppState, e: ServerEvent): AppState {
     case "config": {
       const { type: _type, ...config } = e;
       // Keep local edits if the server reconnects; take the server defaults only the first time.
-      return { ...state, config, settings: state.settings ?? { ...config.defaults } };
+      // Alignment state comes from the server; a config only tells whether it is on (not a load error).
+      const wordAlign = state.wordAlign.state === "error" || state.wordAlign.state === "loading"
+        ? state.wordAlign
+        : { state: config.defaults.word_align ? "ready" as const : "off" as const, message: null };
+      return { ...state, config, wordAlign, settings: state.settings ?? { ...config.defaults } };
     }
     case "status":
       return { ...state, status: e.state };
@@ -88,6 +95,8 @@ function applyServer(state: AppState, e: ServerEvent): AppState {
       // The reply text appears sentence by sentence as it is spoken ("spoken"); a delta only opens the bubble.
       if (streamingAssistant(state.messages)) return state;
       return { ...state, messages: addMessage(state.messages, { role: "assistant", text: "", streaming: true, interrupted: false }) };
+    case "word_align":
+      return { ...state, wordAlign: { state: e.state, message: e.message ?? null } };
     case "assistant_segment":
     case "assistant_words":
       return state; // App schedules the words on the player and dispatches "spoken" as each one sounds

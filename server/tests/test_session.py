@@ -550,3 +550,48 @@ def test_rag_template_update_and_default(session, conv):
 def test_session_without_rag_logs_rag_off(session, sink):
     session.handle({"type": "send_text", "text": "Hi"}); wait_for(lambda: sink)
     assert sink[0]["rag_enabled"] is False and sink[0]["spans"]["retrieval_ms"] is None
+
+
+# ---------- forced word alignment toggle ----------
+
+class FakeAligner:
+    def __init__(self, fail=False): self.ready, self.loads, self.fail = False, 0, fail
+    def load(self):
+        self.loads += 1
+        if self.fail: raise RuntimeError("no weights")
+        self.ready = True
+
+def align_events(events): return [e for e in events if e["type"] == "word_align"]
+
+def test_word_align_loads_the_model_once_then_switches_on_and_off(make, events, audio):
+    fa = FakeAligner(); s = make(word_aligner=fa)
+    assert s.config()["defaults"]["word_align"] is False and getattr(audio, "word_aligner", None) is None
+    s.handle({"type": "update_settings", "word_align": True})
+    wait_for(lambda: any(e["state"] == "ready" for e in align_events(events)))
+    assert [e["state"] for e in align_events(events)] == ["loading", "ready"]
+    assert audio.word_aligner is fa and s.config()["defaults"]["word_align"] is True
+    s.handle({"type": "update_settings", "word_align": False})
+    assert audio.word_aligner is None and align_events(events)[-1] == {"type": "word_align", "state": "off"}
+    s.handle({"type": "update_settings", "word_align": True})
+    wait_for(lambda: align_events(events)[-1]["state"] == "ready")
+    assert fa.loads == 1 and audio.word_aligner is fa                 # already loaded: no second load
+
+def test_word_align_load_failure_reports_and_stays_off(make, events, audio):
+    s = make(word_aligner=FakeAligner(fail=True))
+    s.handle({"type": "update_settings", "word_align": True})
+    wait_for(lambda: align_events(events) and align_events(events)[-1]["state"] == "error")
+    assert "no weights" in align_events(events)[-1]["message"]
+    assert getattr(audio, "word_aligner", None) is None and s.config()["defaults"]["word_align"] is False
+
+def test_word_align_without_an_aligner_or_with_a_bad_value_is_rejected(session, events):
+    session.handle({"type": "update_settings", "word_align": "yes"})
+    assert events[-1]["code"] == "bad_settings"
+    session.handle({"type": "update_settings", "word_align": True})
+    assert align_events(events)[-1]["state"] == "error"                # this server has no aligner
+
+def test_turn_log_records_word_align(make, events, sink, audio):
+    fa = FakeAligner(); s = make(word_aligner=fa)
+    s.handle({"type": "update_settings", "word_align": True})
+    wait_for(lambda: audio.__dict__.get("word_aligner") is fa)
+    s.handle({"type": "send_text", "text": "Hi"}); wait_for(lambda: sink)
+    assert sink[-1]["word_align"] is True

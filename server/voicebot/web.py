@@ -127,12 +127,23 @@ def build_session(settings: Settings):
         params=GenerationParams(s.llm_temperature, s.llm_top_p, s.llm_max_tokens),
         voice=voice, voices=voices, info=info, timer=timer,
         metrics_sink=lambda record: (append_jsonl(TURNS_LOG, record), append_turn_text(TURNS_TEXT_LOG, record)),
-        models=models, callbacks=callbacks, rag=rag)
+        models=models, callbacks=callbacks, rag=rag,
+        word_aligner=_build_word_aligner(s), word_align=s.word_align)
     holder.append(session)
     _close_session = session.close
     # audio.recorder, not recorder: a model switch replaces it.
     session.close = lambda: shutdown_resources(_close_session, audio.recorder, backend, rag=rag)  # type: ignore[method-assign]
     return session
+
+
+def _build_word_aligner(s: Settings):
+    """The forced word aligner (its model loads when first switched on); None if it cannot be built."""
+    try:
+        from voicebot.aligner import WordAligner
+        return WordAligner(device=s.word_align_device)
+    except Exception:
+        log.exception("word alignment is unavailable")
+        return None
 
 
 def _build_rag(s: Settings, on_event: Callable[[dict], None]):

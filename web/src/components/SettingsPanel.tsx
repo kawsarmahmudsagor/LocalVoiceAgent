@@ -1,4 +1,5 @@
-import type { CatalogEntry, Defaults, Role, ServerConfig, Status } from "../protocol";
+import type { CatalogEntry, Defaults, Role, ServerConfig, Status, WordAlignState } from "../protocol";
+import type { AppState } from "../state";
 import { vramUsed } from "../vram";
 
 interface Props {
@@ -9,7 +10,15 @@ interface Props {
   switching: Role | null;
   status: Status;
   onSelectModel(role: Role, slug: string): void;
+  wordAlign: AppState["wordAlign"];
 }
+
+const ALIGN_NOTE: Record<WordAlignState, string> = {
+  off: "Text follows Kokoro's own word timings; other TTS models spread words evenly.",
+  loading: "Loading the alignment model (about 1.2 GB on first use)…",
+  ready: "Words of every TTS model appear as they are spoken. Uses the GPU after each sentence.",
+  error: "",
+};
 
 const label = (e: CatalogEntry) => `${e.slug} · ${e.device} · ${e.vram_mb} MB`;
 
@@ -89,7 +98,7 @@ function Slider({ label, value, min, max, step, disabled, onChange }: SliderProp
   );
 }
 
-export function SettingsPanel({ config, settings, onChange, catalog, switching, status, onSelectModel }: Props) {
+export function SettingsPanel({ config, settings, onChange, catalog, switching, status, onSelectModel, wordAlign }: Props) {
   const disabled = !settings;
   return (
     <aside className="sidebar">
@@ -120,6 +129,20 @@ export function SettingsPanel({ config, settings, onChange, catalog, switching, 
           {(config?.voices ?? []).map(v => <option key={v} value={v}>{v}</option>)}
         </select>
       </div>
+
+      {config?.defaults.word_align !== undefined && (
+        <div className="field">
+          <label className="check" title="Forced word alignment for TTS models without word timings (Piper, Qwen, Inflect, Coqui)">
+            <input type="checkbox" checked={wordAlign.state === "ready" || wordAlign.state === "loading"}
+              disabled={disabled || wordAlign.state === "loading"}
+              onChange={e => onChange({ word_align: e.target.checked })} />
+            <span>Exact word timing</span>
+          </label>
+          {wordAlign.state === "error"
+            ? <p className="field-error" role="alert">{wordAlign.message}</p>
+            : <p className="hint">{ALIGN_NOTE[wordAlign.state]}</p>}
+        </div>
+      )}
 
       <p className="hint">Backend and audio mode are set in <code>.env</code> and apply on restart. Models switch while idle.</p>
     </aside>

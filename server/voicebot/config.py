@@ -94,6 +94,9 @@ class Settings:
     rag_embed_device: str = "cuda"
     ollama_url: str = "http://localhost:11434"
     rag_max_upload_mb: int = 25
+    # Forced word alignment (voicebot.aligner) for TTS engines without word timings; switchable in the UI
+    word_align: bool = False
+    word_align_device: str = "cuda"
 
     @classmethod
     def load(cls, env: Mapping[str, str] | None = None, env_file: Path | None = None, *,
@@ -181,5 +184,7 @@ class Settings:
             rag_embedder=get("RAG_EMBEDDER", "hf:BAAI/bge-small-en-v1.5"),
             rag_embed_device=get("RAG_EMBED_DEVICE", "cuda"),
             ollama_url=get("OLLAMA_URL", "http://localhost:11434").rstrip("/"),
+            word_align=get("WORD_ALIGN", "false", _bool),
+            word_align_device=get("WORD_ALIGN_DEVICE", "cuda"),
             rag_max_upload_mb=get("RAG_MAX_UPLOAD_MB", "25", int),
         )

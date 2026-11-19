@@ -190,7 +190,8 @@ export default function App() {
         hidden={state.tab !== "playground"}>
         <div className="app">
           <SettingsPanel config={state.config} settings={state.settings} onChange={onSettingsChange}
-            catalog={state.catalog} switching={state.switching} status={state.status} onSelectModel={onSelectModel} />
+            catalog={state.catalog} switching={state.switching} status={state.status} onSelectModel={onSelectModel}
+            wordAlign={state.wordAlign} />
           <main className="main">
             <ChatTranscript messages={state.messages} partial={state.partial} />
             <div className="dock">
