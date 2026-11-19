@@ -134,7 +134,6 @@ def test_deleted_doc_not_resurrected_by_switching_back(svc):     # Review Focus 
 
 
 def test_query_waits_at_most_one_batch_not_the_whole_job(tmp_path):     # spec §4.2
-    import threading
     import time
     from voicebot.rag.service import BATCH
 
