@@ -164,11 +164,17 @@ class RagService:
                     new_emb = self._make(new.embedder)
                     self._dim(new_emb)
                 except Exception as exc:  # noqa: BLE001
+                    if new_emb is not None:
+                        try:
+                            new_emb.close()
+                        except Exception:  # noqa: BLE001
+                            pass
                     self._error = str(exc)
                     self._emit(self.config_event())
                     raise RagError(str(exc)) from exc
             old_emb = None
             rebuild = False
+            requeue: list[tuple] = []
             with self._lock:
                 if switch:
                     old_emb, self._embedder = self._embedder, new_emb
@@ -176,22 +182,32 @@ class RagService:
                 if self._embedder is not None and self._store is not None:
                     if switch:
                         info = self._store.info(new.embedder)
-                        ready = sum(d.chunks for d in self._lib.documents() if d.state == "ready")
+                        ready = {d.doc_id for d in self._lib.documents() if d.state == "ready"}
                         rebuild = (
                             info is None
                             or info["dim"] != self._embedder.dim
                             or info["chunk_size"] != new.chunk_size
                             or info["chunk_overlap"] != new.chunk_overlap
-                            or self._store.count(new.embedder) != ready
+                            or self._store.doc_ids(new.embedder) != ready
                         )
                     else:
                         rebuild = index_changed
                     if rebuild:
                         self._reset_locked()
+                    elif switch:
+                        # In-flight and queued index jobs hold the old embedder: invalidate
+                        # them and run the unfinished docs again against the new one.
+                        self._gen += 1
+                        for d in self._lib.documents():
+                            if d.state in ("queued", "indexing"):
+                                self._lib.set_state(d.doc_id, "queued")
+                                requeue.append(("index", d.doc_id, self._gen))
                 self._error = None
                 self._lib.save_settings(new)
             if rebuild:
                 self._enqueue(("reindex",))
+            for job in requeue:
+                self._enqueue(job)
             if old_emb is not None:
                 try:
                     old_emb.close()

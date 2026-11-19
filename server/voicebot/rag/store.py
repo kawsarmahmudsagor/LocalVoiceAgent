@@ -76,6 +76,12 @@ class ChunkStore:
         if col is not None:
             col.delete(where={"doc_id": doc_id})
 
+    def doc_ids(self, slug: str) -> set[str]:
+        col = self._get(slug)
+        if col is None:
+            return set()
+        return {m["doc_id"] for m in col.get(include=["metadatas"])["metadatas"]}
+
     def count(self, slug: str) -> int:
         col = self._get(slug)
         return 0 if col is None else col.count()

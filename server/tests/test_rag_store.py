@@ -26,3 +26,13 @@ def test_persists_across_instances(tmp_path):
     s = ChunkStore(tmp_path); s.reset("hf:x", dim=2, chunk_size=800, chunk_overlap=120)
     s.add("hf:x", "d1", "a.txt", ["north"], [[1.0, 0.0]])
     assert ChunkStore(tmp_path).count("hf:x") == 1
+
+
+def test_doc_ids(tmp_path):
+    s = ChunkStore(tmp_path)
+    assert s.doc_ids("hf:x") == set()
+    s.reset("hf:x", dim=2, chunk_size=800, chunk_overlap=120)
+    s.add("hf:x", "d1", "a.txt", ["a", "b"], [[1.0, 0.0], [0.0, 1.0]])
+    s.add("hf:x", "d2", "b.txt", ["c"], [[1.0, 0.0]])
+    assert s.doc_ids("hf:x") == {"d1", "d2"}
+    s.delete_doc("hf:x", "d1"); assert s.doc_ids("hf:x") == {"d2"}
