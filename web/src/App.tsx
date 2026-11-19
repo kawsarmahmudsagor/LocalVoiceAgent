@@ -13,6 +13,7 @@ import { createExclusive } from "./exclusive";
 import { deleteDocument, ragLocked, reindexAll, uploadDocuments } from "./rag";
 import { initialState, reducer, type AppState } from "./state";
 import { VoiceSocket, socketUrl } from "./ws";
+import { SentenceWords, type TurnWord } from "./words";
 
 const SETTINGS_DEBOUNCE_MS = 300;
 const TAB_KEY = "voicebot.tab";
@@ -32,6 +33,7 @@ export default function App() {
   const playerRate = useRef<number | null>(null);
   const mic = useRef<{ stop(): void } | null>(null);
   const turnId = useRef<number | null>(null);
+  const sentenceWords = useRef(new SentenceWords());
   const ackedTurn = useRef<number | null>(null);
   const pendingPatch = useRef<Partial<Defaults>>({});
   const debounce = useRef<number | undefined>(undefined);
@@ -55,6 +57,7 @@ export default function App() {
       onClose: () => {
         stopMic();
         player.current?.flush();
+        sentenceWords.current.reset();
         dispatch({ kind: "connected", value: false });
       },
       onEvent: e => {
@@ -67,11 +70,23 @@ export default function App() {
         if (e.type === "user_transcript") {
           turnId.current = e.turn_id;
           player.current?.resetClock(); // the previous reply has finished playing before a new turn starts
+          sentenceWords.current.reset();
         }
+        // The reply appears word by word as its audio plays: each word is shown when playback reaches it.
+        const show = (words: TurnWord[]) => {
+          for (const w of words) {
+            const spoken = () => dispatch({ kind: "spoken", turn_id: w.turn_id, text: w.word });
+            if (player.current) player.current.schedule(w.at, spoken);
+            else spoken();
+          }
+        };
         if (e.type === "assistant_segment") {
-          const spoken = () => dispatch({ kind: "spoken", turn_id: e.turn_id, text: e.text });
-          if (e.at_s != null && player.current) player.current.schedule(e.at_s, spoken);
-          else spoken();
+          if (e.at_s == null) dispatch({ kind: "spoken", turn_id: e.turn_id, text: e.text }); // PC speakers: at once
+          else show(sentenceWords.current.segment({ turn_id: e.turn_id, text: e.text, at_s: e.at_s }));
+          return;
+        }
+        if (e.type === "assistant_words") {
+          show(sentenceWords.current.words(e));
           return;
         }
         dispatch({ kind: "server", event: e });
@@ -140,6 +155,7 @@ export default function App() {
   const onStop = () => {
     socket.current?.send({ type: "stop_speaking" });
     player.current?.flush();
+    sentenceWords.current.reset();
   };
 
   const onSelectModel = (role: Role, slug: string) => {
@@ -150,6 +166,7 @@ export default function App() {
     socket.current?.send({ type: "clear" });
     dispatch({ kind: "clear" });
     player.current?.flush();
+    sentenceWords.current.reset();
   };
 
   const reportRagError = (err: unknown) =>

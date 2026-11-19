@@ -89,7 +89,8 @@ function applyServer(state: AppState, e: ServerEvent): AppState {
       if (streamingAssistant(state.messages)) return state;
       return { ...state, messages: addMessage(state.messages, { role: "assistant", text: "", streaming: true, interrupted: false }) };
     case "assistant_segment":
-      return state; // App schedules it on the player and dispatches "spoken" when it sounds
+    case "assistant_words":
+      return state; // App schedules the words on the player and dispatches "spoken" as each one sounds
     case "assistant_done": {
       const cur = streamingAssistant(state.messages);
       if (cur) {

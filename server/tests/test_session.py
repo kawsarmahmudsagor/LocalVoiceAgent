@@ -72,11 +72,13 @@ class FakeAudio:
     def set_recorder(self, r): self.recorder = r
     def set_output_format(self, fmt): self.output_format = fmt
     play_seconds = None   # BrowserAudio returns the seconds of audio it sent to the browser
-    def play(self, stream, on_first_audio, on_sentence=None):
+    word_times = None     # what on_words reports per sentence (None: the engine gave no word times)
+    def play(self, stream, on_first_audio, on_sentence=None, on_words=None):
         self.log.append("play"); first = True
         for i, chunk in enumerate(stream.it):
             stream.consumed.append(chunk)
             if on_sentence: on_sentence(chunk, i * 0.5)   # each chunk stands in for one sentence
+            if on_words: on_words(chunk, self.word_times, (i + 1) * 0.5)
             if first: on_first_audio(); first = False
             if stream.stopped: break
         return self.play_seconds
@@ -208,6 +210,16 @@ def test_spoken_sentences_reach_the_ui_with_audio_offsets(session, events):
     assert segs == [{"type": "assistant_segment", "turn_id": 1, "text": "Hello", "at_s": 0.0},
                     {"type": "assistant_segment", "turn_id": 1, "text": " there.", "at_s": 0.5}]
     assert types(events).index("assistant_segment") < types(events).index("assistant_done")
+    words = [e for e in events if e["type"] == "assistant_words"]
+    assert words == [{"type": "assistant_words", "turn_id": 1, "word_s": None, "end_s": 0.5},
+                     {"type": "assistant_words", "turn_id": 1, "word_s": None, "end_s": 1.0}]
+    order = [e["type"] for e in events if e["type"] in ("assistant_segment", "assistant_words")]
+    assert order == ["assistant_segment", "assistant_words"] * 2     # each sentence's words follow it
+
+def test_native_word_times_reach_the_ui(session, events):
+    session.audio.word_times = [0.0, 0.2]
+    session.handle({"type": "send_text", "text": "Hi"}); wait_for(lambda: "assistant_done" in types(events))
+    assert next(e for e in events if e["type"] == "assistant_words")["word_s"] == [0.0, 0.2]
 
 @pytest.mark.texts(["What time is it?"])
 def test_voice_turn_metrics_and_sink(session_with_texts, sink, events):     # sink fixture: list.append
@@ -420,7 +432,7 @@ def test_config_has_model_fields(session_with_models):
 def test_tts_failure_reports_error_not_an_empty_turn(session, audio, events, sink):   # e2e: NLTK data missing
     # RealtimeTTS fails on its own thread (e.g. stream2sentence cannot load NLTK data) and play()
     # returns without ever reading the LLM stream. The user must see an error, and no metrics are logged.
-    audio.play = lambda stream, on_first_audio, on_sentence=None: None
+    audio.play = lambda stream, on_first_audio, on_sentence=None, on_words=None: None
     session.handle({"type": "send_text", "text": "Hi"})
     err = wait_for(lambda: next((e for e in events if e["type"] == "error"), None))
     assert err["code"] == "tts_error" and sink == []

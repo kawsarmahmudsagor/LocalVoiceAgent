@@ -513,6 +513,12 @@ class VoiceSession:
             if not stop_event.is_set():
                 self._emit({"type": "assistant_segment", "turn_id": turn_id, "text": sentence, "at_s": at_s})
 
+        def on_words(sentence: str, word_s: list[float] | None, end_s: float) -> None:
+            # After the sentence above is synthesized: when each of its words starts on the reply clock
+            # (None: the engine gave none, so the browser spreads the words up to end_s).
+            if not stop_event.is_set():
+                self._emit({"type": "assistant_words", "turn_id": turn_id, "word_s": word_s, "end_s": end_s})
+
         stopper = self._stopper
         if stopper is not None:
             stopper.join(timeout=5)  # let the previous turn's stop finish before playing again
@@ -528,7 +534,7 @@ class VoiceSession:
             if rag_on:
                 messages = self._retrieve(text, turn_id, rag_fields) or messages
             self.stream.feed(tokens())
-            audio_seconds = self.audio.play(self.stream, on_first_audio, on_sentence)
+            audio_seconds = self.audio.play(self.stream, on_first_audio, on_sentence, on_words)
             if not consumed and not stop_event.is_set():
                 # RealtimeTTS failed on its own thread before reading the reply (it only prints the
                 # error there). Without this the turn would end silently as an empty reply.

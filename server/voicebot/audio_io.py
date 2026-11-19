@@ -20,11 +20,15 @@ class AudioIO(Protocol):
     def mute_input(self, muted: bool) -> None: ...
     def set_sink(self, send_binary: Callable[[bytes], None] | None) -> None: ...
     def play(self, stream, on_first_audio: Callable[[], None],
-             on_sentence: Callable[[str, float | None], None] | None = None) -> float | None:
+             on_sentence: Callable[[str, float | None], None] | None = None,
+             on_words: Callable[[str, list[float] | None, float], None] | None = None) -> float | None:
         """Blocks until synthesis ends. BrowserAudio returns the seconds of audio sent to
         the browser (which plays it later); ServerAudio returns None (already played).
         on_sentence(text, at_s) fires before each sentence is synthesized; at_s is where that
-        sentence starts in the reply's audio (BrowserAudio), or None (ServerAudio)."""
+        sentence starts in the reply's audio (BrowserAudio), or None (ServerAudio).
+        on_words(text, word_s, end_s) fires after it is synthesized (BrowserAudio only): word_s holds
+        each whitespace word's start on the reply clock, or None when the engine gave no usable word
+        times; end_s is where the sentence's audio ends."""
     def cut(self) -> None:
         """Stop pressed: drop any audio the current play() still produces."""
 
@@ -80,6 +84,50 @@ def _count_queued(engine) -> Iterator[Callable[[], int]]:
             del q.put
 
 
+def _alnum(s: str) -> str:
+    return "".join(c for c in s.lower() if c.isalnum())
+
+
+def _drain(q) -> list:
+    out = []
+    if q is None:
+        return out
+    while True:
+        try:
+            out.append(q.get_nowait())
+        except Exception:  # queue.Empty
+            return out
+
+
+def word_times(text: str, timings: list, at_s: float, engine_start: float) -> list[float] | None:
+    """Start time, on the reply clock, of each whitespace word of `text`, from an engine's word timings.
+
+    Timings are on the engine's clock; `engine_start` is that clock when the sentence began and `at_s` is
+    where the sentence starts in the reply. Tokens are matched to words by their letters and digits, so
+    "It's" may be the tokens "It" + "'s" and punctuation tokens are skipped. A word with no letters or
+    digits ("—") takes the previous word's time. Returns None when the tokens don't spell the text."""
+    toks = [(_alnum(str(t.word)), float(t.start_time)) for t in timings]
+    toks = [tk for tk in toks if tk[0]]
+    out: list[float] = []
+    i, prev = 0, at_s
+    for word in text.split():
+        target = _alnum(word)
+        if not target:
+            out.append(prev)
+            continue
+        acc, start = "", None
+        while len(acc) < len(target) and i < len(toks):
+            if start is None:
+                start = toks[i][1]
+            acc += toks[i][0]
+            i += 1
+        if acc != target or start is None:
+            return None
+        prev = at_s + (start - engine_start)
+        out.append(prev)
+    return out if i == len(toks) else None
+
+
 class BrowserAudio:
     """Mic PCM arrives over the WebSocket; TTS PCM is sent back over it."""
 
@@ -115,8 +163,15 @@ class BrowserAudio:
             self._generation += 1
 
     def play(self, stream, on_first_audio: Callable[[], None],
-             on_sentence: Callable[[str, float | None], None] | None = None) -> float:
+             on_sentence: Callable[[str, float | None], None] | None = None,
+             on_words: Callable[[str, list[float] | None, float], None] | None = None) -> float:
         first = _once(on_first_audio)
+        engine = stream.engine
+        timings_q = getattr(engine, "timings", None)
+        # Native word times line up with the sent audio only when the engine reports them and doesn't trim it.
+        native = bool(getattr(engine, "provides_word_timings", False)) and not getattr(engine, "trim_silence", False)
+        _drain(timings_q)  # timings left over from an earlier reply
+        sentence: dict = {}
         with self._lock:
             generation = self._generation
         sent = 0
@@ -134,15 +189,27 @@ class BrowserAudio:
             sink(chunk)
             sent += len(chunk)
 
-        with _count_queued(stream.engine) as queued:
+        def is_current() -> bool:
+            with self._lock:
+                return self._generation == generation
+
+        with _count_queued(engine) as queued:
             def before_sentence(text: str) -> None:
-                with self._lock:
-                    current = self._generation == generation
-                if current and on_sentence is not None:
-                    on_sentence(text, queued() / bytes_per_s)
+                _drain(timings_q)
+                at_s = queued() / bytes_per_s
+                sentence.update(at_s=at_s, engine_start=float(getattr(engine, "audio_duration", 0.0) or 0.0))
+                if is_current() and on_sentence is not None:
+                    on_sentence(text, at_s)
+
+            def after_sentence(text: str) -> None:
+                timings = _drain(timings_q)
+                if not sentence or not is_current() or on_words is None:
+                    return
+                words = word_times(text, timings, sentence["at_s"], sentence["engine_start"]) if native else None
+                on_words(text, words, queued() / bytes_per_s)
 
             stream.play(on_audio_chunk=on_chunk, muted=True, before_sentence_synthesized=before_sentence,
-                        **self.play_kwargs)
+                        on_sentence_synthesized=after_sentence, **self.play_kwargs)
         return sent / bytes_per_s
 
 
@@ -171,8 +238,9 @@ class ServerAudio:
         pass  # stream.stop() silences the PC speakers
 
     def play(self, stream, on_first_audio: Callable[[], None],
-             on_sentence: Callable[[str, float | None], None] | None = None) -> None:
-        first = _once(on_first_audio)
+             on_sentence: Callable[[str, float | None], None] | None = None,
+             on_words: Callable[[str, list[float] | None, float], None] | None = None) -> None:
+        first = _once(on_first_audio)  # on_words is unused: the UI shows each sentence at once
 
         def before_sentence(text: str) -> None:
             if on_sentence is not None:

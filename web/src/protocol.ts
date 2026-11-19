@@ -24,7 +24,9 @@ export type ServerEvent = ({ type: "config" } & ServerConfig) | { type: "status"
   | { type: "user_transcript"; text: string; turn_id: number }
   | { type: "assistant_delta"; text: string }
   /** One sentence of the reply; at_s is where its audio starts in the reply (null: no browser playback). */
-  | { type: "assistant_segment"; turn_id: number; text: string; at_s: number | null } | { type: "assistant_done"; text: string; interrupted: boolean }
+  | { type: "assistant_segment"; turn_id: number; text: string; at_s: number | null }
+  /** After a sentence is synthesized: when each of its words starts (null: spread them up to end_s). */
+  | { type: "assistant_words"; turn_id: number; word_s: number[] | null; end_s: number } | { type: "assistant_done"; text: string; interrupted: boolean }
   | ({ type: "metrics" } & Metrics) | { type: "error"; code: string; message: string }
   | { type: "catalog"; entries: CatalogEntry[] }
   | { type: "model_status"; role: Role; slug: string; state: "loading" | "ready" | "failed"; message?: string; load_ms?: number }

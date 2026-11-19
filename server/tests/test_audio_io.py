@@ -254,6 +254,67 @@ def test_browser_audio_drops_sentences_after_cut():
     a.play(s, lambda: None, on_sentence=lambda t, at: seen.append(t))
     assert seen == ["One."]
 
+class TimedStream(QueuedStream):
+    """Like Kokoro: each sentence's word timings go to engine.timings, offset by engine.audio_duration
+    (the engine's own clock, reset every play())."""
+    def __init__(self, sentences, *, trim_silence=False, native=True):
+        import queue
+        super().__init__([(t, n) for t, n, _ in sentences]); self.timed = sentences
+        self.engine.timings = queue.Queue(); self.engine.audio_duration = 0.0
+        self.engine.provides_word_timings = native; self.engine.trim_silence = trim_silence
+    def play(self, **kw):
+        TimingInfo = lambda s, e, w: NS(start_time=s, end_time=e, word=w)   # RealtimeTTS's shape
+        self.play_kw = kw; e = self.engine; e.audio_duration = 0.0
+        for text, nbytes, words in self.timed:
+            kw["before_sentence_synthesized"](text)
+            for w, start in words:
+                e.timings.put(TimingInfo(e.audio_duration + start, e.audio_duration + start + 0.1, w))
+            e.queue.put(b"\0" * nbytes); e.audio_duration += nbytes / 48000
+            e.queue.put(b"\0" * 2400)                         # a sentence silence the engine clock never sees
+            kw["on_sentence_synthesized"](text)
+        while not e.queue.empty():
+            kw["on_audio_chunk"](e.queue.get())
+
+def _words(a, s):
+    seen = []
+    a.play(s, lambda: None, on_sentence=lambda t, at: None,
+           on_words=lambda t, word_s, end_s: seen.append((t, word_s, end_s)))
+    return seen
+
+def test_browser_audio_reports_native_word_times_on_the_reply_clock():
+    # 4800 bytes = 0.1 s; 2400 bytes of silence after each sentence = 0.05 s.
+    s = TimedStream([("Hi there.", 4800, [("Hi", 0.0), ("there", 0.04), (".", 0.09)]),
+                     ("Bye, now!", 9600, [("Bye", 0.01), (",", 0.03), ("now", 0.05), ("!", 0.18)])])
+    a = BrowserAudio(Rec(), {"sample_rate": 24000, "channels": 1}); a.set_sink(lambda b: None)
+    seen = _words(a, s)
+    assert [t for t, _, _ in seen] == ["Hi there.", "Bye, now!"]
+    assert seen[0][1] == pytest.approx([0.0, 0.04]) and seen[0][2] == pytest.approx(0.15)
+    # The second sentence starts at 0.15 s (0.1 audio + 0.05 silence); the engine clock says 0.1.
+    assert seen[1][1] == pytest.approx([0.16, 0.20]) and seen[1][2] == pytest.approx(0.40)
+
+def test_word_times_fall_back_to_none_without_native_timings_or_when_they_dont_match():
+    a = BrowserAudio(Rec(), {"sample_rate": 24000, "channels": 1}); a.set_sink(lambda b: None)
+    plain = TimedStream([("Hi there.", 4800, [])], native=False)
+    assert _words(a, plain) == [("Hi there.", None, pytest.approx(0.15))]
+    trimmed = TimedStream([("Hi there.", 4800, [("Hi", 0.0), ("there", 0.04)])], trim_silence=True)
+    assert _words(a, trimmed)[0][1] is None                # trimmed audio no longer matches the timings
+    odd = TimedStream([("Hi there.", 4800, [("Hello", 0.0), ("there", 0.04)])])
+    assert _words(a, odd)[0][1] is None                    # tokens that don't spell the text: no guessing
+
+def test_word_times_handle_contractions_split_tokens_and_symbols():
+    s = TimedStream([("It's well-known — really.", 9600,
+                      [("It", 0.0), ("'s", 0.02), ("well", 0.05), ("-", 0.07), ("known", 0.08), ("—", 0.1),
+                       ("really", 0.12), (".", 0.19)])])
+    a = BrowserAudio(Rec(), {"sample_rate": 24000, "channels": 1}); a.set_sink(lambda b: None)
+    assert _words(a, s)[0][1] == pytest.approx([0.0, 0.05, 0.05, 0.12])   # "—" shares the previous word's time
+
+def test_words_are_dropped_after_cut():
+    s = TimedStream([("One.", 4800, [("One", 0.0)]), ("Two.", 4800, [("Two", 0.0)])])
+    a = BrowserAudio(Rec(), {"sample_rate": 24000, "channels": 1}); a.set_sink(lambda b: None)
+    orig = s.engine.queue.put
+    s.engine.queue.put = lambda c, *x, **k: (orig(c, *x, **k), a.cut())
+    assert _words(a, s) == []
+
 def test_server_audio_reports_sentences_without_offset():
     s, seen = QueuedStream([("One.", 4800)]), []
     ServerAudio(Rec()).play(s, lambda: None, on_sentence=lambda t, at: seen.append((t, at)))
