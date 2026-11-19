@@ -19,6 +19,7 @@ from pathlib import Path
 from voicebot.bench.gpu import GpuSampler
 from voicebot.catalog import Entry, by_slug, load_catalog
 from voicebot.config import REPO_ROOT
+from voicebot.stt import engine_options
 
 DEFAULT_POOL = REPO_ROOT / "bench" / "pool.toml"
 DEFAULT_MANIFEST = REPO_ROOT / "bench" / "clips" / "manifest.json"
@@ -29,7 +30,7 @@ HEALTH_TIMEOUT_S = 600
 
 def _engine_options(entry: Entry) -> dict:
     """Engine options without download_root, which the server takes as its own --download-root flag."""
-    return {k: v for k, v in entry.options.items() if k != "download_root"}
+    return {k: v for k, v in engine_options(entry.options).items() if k != "download_root"}
 
 
 def server_command(final: Entry, port: int, realtime: Entry | None, python: str) -> list[str]:

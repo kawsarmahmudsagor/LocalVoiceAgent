@@ -58,7 +58,7 @@ family = "sherpa"
 fetch = "sherpa:parakeet"
 streaming = false
 vram_mb = 0
-options = { provider = "cpu", num_threads = 7, download_root = "models/sherpa-onnx" }
+options = { provider = "cpu:assets/sherpa-cpu-session.conf", num_threads = 7, download_root = "models/sherpa-onnx" }
 
 [[entry]]
 slug = "qwen3-asr-1-7b"

@@ -5,5 +5,9 @@
 --extra-index-url https://download.pytorch.org/whl/cu128
 torch==2.7.1+cu128
 torchaudio==2.7.1+cu128
--e ./RealtimeSTT[sherpa-onnx,faster-whisper,server]
+# sherpa-onnx 1.13.8 replaces the [sherpa-onnx] extra's 1.13.4 pin: it is the tested CPU configuration in
+# RealtimeSTT/docs/engines/sherpa-onnx.md ("CPU performance and installation"), used with assets/sherpa-cpu-session.conf.
+-e ./RealtimeSTT[faster-whisper,server]
+sherpa-onnx==1.13.8
+sherpa-onnx-core==1.13.8
 python-dotenv

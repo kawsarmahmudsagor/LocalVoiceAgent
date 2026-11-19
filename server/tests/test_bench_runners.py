@@ -55,7 +55,8 @@ def test_server_command_lifts_recorder_level_options():                    # fin
     e = by_slug(load_catalog(POOL))
     cmd = server_command(e["sherpa-parakeet-v3"], 8766, None, "py")
     assert cmd[cmd.index("--download-root") + 1] == str(REPO_ROOT / "models/sherpa-onnx")
-    assert "download_root" not in json.loads(cmd[cmd.index("--engine-options") + 1])
+    opts = json.loads(cmd[cmd.index("--engine-options") + 1])
+    assert "download_root" not in opts and opts["provider"] == f"cpu:{REPO_ROOT / 'assets/sherpa-cpu-session.conf'}"
     cmd = server_command(e["whisper-small-en"], 8766, None, "py")
     assert cmd[cmd.index("--compute-type") + 1] == "float16" and cmd[cmd.index("--language") + 1] == "en"
 

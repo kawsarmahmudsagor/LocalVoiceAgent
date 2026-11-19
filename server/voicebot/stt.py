@@ -75,9 +75,19 @@ def _repo_path(value: str) -> str:
     return str(REPO_ROOT / value) if value.startswith(("models/", "assets/")) else value
 
 
+def engine_options(options: dict) -> dict:
+    """Engine options with repo paths made absolute. sherpa-onnx takes `provider="cpu:<session config>"`
+    (RealtimeSTT/docs/engines/sherpa-onnx.md, "CPU performance and installation"); the file needs an absolute path."""
+    opts = dict(options)
+    provider = opts.get("provider")
+    if isinstance(provider, str) and provider.startswith("cpu:"):
+        opts["provider"] = "cpu:" + _repo_path(provider.removeprefix("cpu:"))
+    return opts
+
+
 def entry_kwargs(final, realtime=None) -> dict:
     """Recorder kwargs for catalog entries (v2 spec §4.3). See plan Task 12."""
-    opts = dict(final.options)
+    opts = engine_options(final.options)
     kw: dict = dict(transcription_engine=final.engine, model=_repo_path(final.model), device=final.device)
     if "compute_type" in opts:
         kw["compute_type"] = opts["compute_type"]
@@ -85,7 +95,7 @@ def entry_kwargs(final, realtime=None) -> dict:
         kw["download_root"] = _repo_path(opts.pop("download_root"))
     kw["transcription_engine_options"] = opts
     if realtime is not None:
-        rt_opts = dict(realtime.options)
+        rt_opts = engine_options(realtime.options)
         rt_root = rt_opts.pop("download_root", None)
         if rt_root is not None and "download_root" not in kw:  # one download_root serves both engines
             kw["download_root"] = _repo_path(rt_root)

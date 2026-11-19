@@ -43,7 +43,7 @@ model = "nvidia/parakeet-tdt-0.6b-v3"
 device = "cpu"
 family = "sherpa"
 fetch = "sherpa:parakeet"
-options = { provider = "cpu", num_threads = 7, download_root = "models/sherpa-onnx" }
+options = { provider = "cpu:assets/sherpa-cpu-session.conf", num_threads = 7, download_root = "models/sherpa-onnx" }
 
 # Added on user request (2026-11-18), overriding spec §3.2; forced onto the shortlist by bench/overrides.toml.
 [[entry]]

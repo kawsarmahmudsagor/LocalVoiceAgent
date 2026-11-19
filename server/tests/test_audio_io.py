@@ -161,6 +161,9 @@ def test_make_recorder_entry_paths_and_compute_type():
     assert r.kw["compute_type"] == "float16" and r.kw["model"] == "small.en"
     r = stt.make_recorder(Settings.load(env={}), use_microphone=False, recorder_cls=Rec, final=e["sherpa-parakeet-v3"])
     assert r.kw["download_root"] == str(REPO_ROOT / "models/sherpa-onnx") and "download_root" not in r.kw["transcription_engine_options"]
+    conf = REPO_ROOT / "assets/sherpa-cpu-session.conf"
+    assert r.kw["transcription_engine_options"]["provider"] == f"cpu:{conf}"
+    assert "allow_spinning=0" in conf.read_text()  # sherpa-onnx.md, "CPU performance and installation"
     r = stt.make_recorder(Settings.load(env={}), use_microphone=False, recorder_cls=Rec, final=e["transcribe-cpp-parakeet-q4"])
     assert r.kw["model"] == str(REPO_ROOT / "models/transcribe-cpp/parakeet-tdt-0.6b-v3-Q4_K_M.gguf")
 
