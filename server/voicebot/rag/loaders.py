@@ -18,9 +18,7 @@ def _read_plain(path: Path) -> str:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
         text = raw.decode("cp1252", errors="replace")
-    return text.replace("
-", "
-")
+    return text.replace("\r\n", "\n")
 
 
 def _read_pdf(path: Path) -> str:
