@@ -147,3 +147,17 @@ def test_diarizer_factory_only_in_browser_mode():
     from voicebot.config import Settings
     assert _build_diarizer_factory(Settings.load({"AUDIO_IO": "server"}, platform="win32")) is None
     assert callable(_build_diarizer_factory(Settings.load({}, platform="linux")))
+
+
+def test_call_page_served(tmp_path):
+    (tmp_path / "index.html").write_text("<p>play</p>")
+    (tmp_path / "call.html").write_text("<p>call</p>")
+    with TestClient(create_app(Settings.load(env={}), session_factory=lambda s: FakeSession(), web_dist=tmp_path)) as c:
+        r = c.get("/call")
+        assert r.status_code == 200 and "call" in r.text
+        assert "play" in c.get("/").text
+
+
+def test_call_page_absent_without_build(tmp_path):
+    with TestClient(create_app(Settings.load(env={}), session_factory=lambda s: FakeSession(), web_dist=tmp_path)) as c:
+        assert c.get("/call").status_code == 404

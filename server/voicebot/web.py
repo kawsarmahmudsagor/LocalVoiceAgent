@@ -9,10 +9,12 @@ import json
 import logging
 import threading
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Response, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from voicebot.config import REPO_ROOT, Settings
@@ -239,7 +241,8 @@ def _safe_call(fn: Callable[[], None], what: str) -> None:
 
 
 def create_app(settings: Settings | None = None, *,
-               session_factory: Callable[[Settings], Any] | None = None) -> FastAPI:
+               session_factory: Callable[[Settings], Any] | None = None,
+               web_dist: Path = WEB_DIST) -> FastAPI:
     settings = settings or Settings.load()
     factory = session_factory or build_session
     state: dict[str, Any] = {"session": None, "connected": False}
@@ -370,8 +373,14 @@ def create_app(settings: Settings | None = None, *,
                 state["connected"] = False
                 sender_task.cancel()
 
-    if WEB_DIST.is_dir():
-        app.mount("/", StaticFiles(directory=WEB_DIST, html=True), name="web")
+    call_page = web_dist / "call.html"
+    if call_page.is_file():
+        @app.get("/call", include_in_schema=False)
+        def call_ui() -> FileResponse:
+            return FileResponse(call_page)
+
+    if web_dist.is_dir():
+        app.mount("/", StaticFiles(directory=web_dist, html=True), name="web")
     return app
 
 
