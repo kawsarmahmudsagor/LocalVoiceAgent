@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { apiPort, devProxy } from "./devProxy";
+import { apiPort, callPageRewrite, devProxy } from "./devProxy";
 describe("dev proxy", () => {
   it("follows WEB_PORT from .env, default 8000", () => {
     expect(apiPort({})).toBe(8000);
@@ -11,5 +11,16 @@ describe("dev proxy", () => {
     const p = devProxy(8001);
     expect(p["/api"]).toBe("http://127.0.0.1:8001");
     expect(p["/ws"]).toEqual({ target: "ws://127.0.0.1:8001", ws: true });
+  });
+});
+
+describe("callPageRewrite", () => {
+  it("maps /call to call.html", () => {
+    expect(callPageRewrite("/call")).toBe("/call.html");
+    expect(callPageRewrite("/call/")).toBe("/call.html");
+    expect(callPageRewrite("/call?x=1")).toBe("/call.html?x=1");
+  });
+  it("leaves other paths alone", () => {
+    for (const u of ["/", "/ws", "/api/config", "/caller", "/call.html"]) expect(callPageRewrite(u)).toBeNull();
   });
 });

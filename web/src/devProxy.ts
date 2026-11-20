@@ -13,3 +13,9 @@ export function devProxy(port: number) {
     "/ws": { target: `ws://127.0.0.1:${port}`, ws: true },
   };
 }
+
+/** Dev server: `/call` is the call page, served from `call.html` (the built server does the same). */
+export function callPageRewrite(url: string): string | null {
+  const m = /^\/call\/?(\?.*)?$/.exec(url);
+  return m ? `/call.html${m[1] ?? ""}` : null;
+}
