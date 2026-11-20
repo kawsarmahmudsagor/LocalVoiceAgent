@@ -152,7 +152,7 @@ New event records in `turns.jsonl` (they carry `"event"`, so `latency_report`'s 
 | Event | Fields |
 |---|---|
 | `diarizer_on` | `ts`, `diar_mode`, `load_ms` |
-| `diarizer_off` | `ts`, `reason` (`"user"`, `"error"`, `"overflow"`) |
+| `diarizer_off` | `ts`, `reason` (`"user"`, `"error"`, `"overflow"`, `"close"`) |
 | `diar_ignored` | `ts`, `speaker`, `text`, `diar_wait_ms`, `diar_mode` |
 
 The server log also prints a line when the diarizer turns on or off. The text log (`turns.txt`) prints one line per event and adds the diarization fields to each turn block. `latency_report --by diarization,diar_mode` compares runs; `diar_wait_ms` is added to the span table.
@@ -229,7 +229,7 @@ Measured on 2026-11-20 on the Linux VM (RTX 5090 32 GB, NVIDIA driver 580.178.04
 
 **Probe clip:** 13.5 s, two voices (A 0–5 s, B 5.25–10.25 s, A 10.5–13.5 s), 16 kHz mono, built from RealtimeTTS test WAVs. All three modes labelled A as Speaker 0, B as Speaker 1, and A again as Speaker 0. `ultra_low_latency` also produced one 0.11 s spurious Speaker 1 blip at 1.09 s.
 
-| mode | latency ms | num_samples_first_audio_chunk | num_samples_per_audio_chunk | num_mel_frames_per_step | audio_chunk_start(mel_per_step) | output frames per step | probe RTF, eager bf16 |
+| mode | latency ms | num_samples_first_audio_chunk | num_samples_per_audio_chunk | num_mel_frames_per_step | audio_chunk_start(mel_per_step) | output frames per step | probe RTF, bf16 |
 |---|---|---|---|---|---|---|---|
 | ultra_low_latency | 320 | 5160 | 5520 | 24 | 3584 | 24 | 0.175 |
 | very_low_latency | 640 | 10280 | 10640 | 48 | 7424 | 48 | 0.051 |

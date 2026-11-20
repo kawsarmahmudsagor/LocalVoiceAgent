@@ -852,7 +852,7 @@ Behaviour:
 - Reducer: an ignored transcript adds a user message with `speaker` and `ignored: true`, clears `partial`, and leaves `turnId` unchanged. A normal one stores `speaker` on the message as today plus the tag.
 - `App.tsx`: the `user_transcript` branch that resets the player and `heard` runs only when `!e.ignored && e.turn_id != null`. Pass `diarization={state.diarization}` to `SettingsPanel`.
 - `ChatTranscript`: user role label `You` plus a `<span className="speaker-tag">S0</span>` (`S?` for `"unknown"`) when `speaker` is set; ignored messages get class `msg-ignored` and role label `Speaker N (ignored)`.
-- `SettingsPanel` (shown when `config.defaults.diarization !== undefined`): checkbox **Speaker diarization** (checked when `ready` or `loading`; disabled when `!config.diarization_available`, no settings, or loading); select `id="diar-mode"` **Diarization latency** with options `ultra_low_latency` "0.32 s", `very_low_latency` "0.64 s", `low_latency` "1.04 s"; slider **Max wait (ms)** 0–2000 step 50; mode and wait disabled when `!config.diarization_available`. Status line: error message (role alert) or a hint: off "Answers everyone.", loading "Loading the diarization model…", ready "Answers Speaker 0 only. Clear makes the next voice Speaker 0."
+- `SettingsPanel` (shown when `config.defaults.diarization !== undefined`): checkbox **Speaker diarization** (checked when `ready` or `loading`; disabled when `!config.diarization_available`, no settings, or loading); select `id="diar-mode"` **Diarization latency** with options `ultra_low_latency` "0.32 s", `very_low_latency` "0.64 s", `low_latency` "1.04 s"; slider **Max wait (ms)** 0–2000 step 50; mode and wait disabled when `!config.diarization_available`. Status line: error message (role alert) or a hint: off "Answers everyone.", loading "Loading the diarization model…", ready "Answers Speaker 0 only. Clear (while the bot is quiet) makes the next voice Speaker 0."
 - CSS: `.msg-ignored { opacity: 0.5; }`, `.speaker-tag` small muted pill next to the role label.
 
 - [ ] **Step 1: Write the failing tests.** In `state.test.ts`:
@@ -907,5 +907,5 @@ Not code. Hand these to the user and record the results in spec §8 when they co
 
 1. One speaker, diarization on: turns answered and tagged S0. Compare `perceived_ms` with diarization off.
 2. Two people: the second person's speech shows as "Speaker 1 (ignored)" and gets no answer.
-3. Speakers instead of headphones, barge-in `onset`: the bot's own echo does not interrupt it; the user still can.
+3. Speakers instead of headphones, barge-in `onset`: the bot's own echo does not interrupt it; the user still can. Press Clear and speak first, before letting the bot talk through the speakers: after a reset the first voice becomes Speaker 0, and that must be you, not the echo.
 4. Each latency mode: `cd server && ../.venv/bin/python -m voicebot.latency_report --by diarization,diar_mode` and compare `diar_wait_ms`, plus `diar_lag_ms` and the labels in `logs/turns.txt`.

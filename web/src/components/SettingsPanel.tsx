@@ -17,7 +17,7 @@ interface Props {
 const DIAR_NOTE: Record<DiarState, string> = {
   off: "Answers everyone.",
   loading: "Loading the diarization model…",
-  ready: "Answers Speaker 0 only. Clear makes the next voice Speaker 0.",
+  ready: "Answers Speaker 0 only. Clear (while the bot is quiet) makes the next voice Speaker 0.",
   error: "",
 };
 

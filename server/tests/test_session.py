@@ -1230,3 +1230,38 @@ def test_new_recording_during_a_reject_check_is_checked_after_it(make, diar, eve
     wait_for(lambda: "barge_in" in types(events))
     r = wait_for(lambda: next((x for x in sink if "event" not in x), None))
     assert r["diar_rejects"] == 1 and r["interrupted"] is True
+
+
+# ---------- v4 final review fixes ----------
+
+def test_barge_fires_at_once_on_a_covered_window_with_no_speaker(make, diar, events, sink):   # final 1
+    diar.pos = diar.cov = 32000; diar.shares = [None]                     # covered, but no voiced frame
+    s = armed_diar(make, diar, events, "onset", wait_ms=2000); t0 = time.monotonic(); s.on_recording_start()
+    wait_for(lambda: "barge_in" in types(events), timeout=0.5)
+    assert time.monotonic() - t0 < 0.3
+    r = wait_for(lambda: next((x for x in sink if "event" not in x), None))
+    assert r["spans"]["barge_detect_ms"] < 300
+
+def test_mic_off_during_the_decision_drops_the_transcript(make, diar, events, recorder, backend):   # final 2
+    diar.pos, diar.cov = 16000, 0                                          # the decision waits
+    s = listening_diar_session(make, diar, events); s.handle({"type": "update_settings", "diar_wait_ms": 2000})
+    s.on_recording_start(); s.on_recording_stop(); recorder.texts.append("Hello there")
+    time.sleep(0.1); s.handle({"type": "stop_listening"}); diar.cov = 16000    # decided (Speaker 0) after Mic off
+    time.sleep(0.2)
+    assert "user_transcript" not in types(events) and backend.calls == []
+    wait_for(lambda: [e for e in events if e["type"] == "status"][-1]["state"] == "idle")
+
+def test_close_writes_diarizer_off(make, diar, events, sink):                                   # final 3
+    s = diar_session(make, diar); turn_on(s, events)
+    s.close()
+    assert sink[-1]["event"] == "diarizer_off" and sink[-1]["reason"] == "close"
+    s.close()                                                              # a second close writes nothing more
+    assert [r.get("reason") for r in sink if r.get("event") == "diarizer_off"] == ["close"]
+
+def test_words_stop_during_a_running_check_is_not_a_false_trigger(make, diar, events, sink, backend):  # final 4
+    diar.pos = 32000; diar.shares = [None, None, None, 0.9]               # the check polls ~120 ms, then fires
+    s = armed_diar(make, diar, events, "words"); s.on_recording_start(); s.on_partial("hello there")
+    time.sleep(0.03); s.on_recording_stop()
+    wait_for(lambda: "barge_in" in types(events))
+    r = wait_for(lambda: next((x for x in sink if "event" not in x), None))
+    assert r["barge_false_triggers"] == 0 and r["spans"]["barge_detect_ms"] is not None

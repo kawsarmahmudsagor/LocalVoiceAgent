@@ -903,7 +903,8 @@ class VoiceSession:
             self._last_window = (self._utt_start, self._utt_end, self._diar_epoch)
             if self._barge_turn is None or self._barge_fired:
                 return
-            if self._barge_mode == "words" and self.timer.has("barge_onset"):
+            # A running speaker check owns the onset: it fires (and needs the mark) or rejects and counts it.
+            if self._barge_mode == "words" and self.timer.has("barge_onset") and not self._barge_checking:
                 self._barge_false += 1   # the recording ended without a real word: a cough or a noise
                 self.timer.unmark("barge_onset")
             elif self._barge_mode == "onset" and self._barge_timer is not None:
@@ -1046,6 +1047,10 @@ class VoiceSession:
                         return "fire", gen
                     log.info("barge-in on turn %d rejected: Speaker 0 share %.2f", turn_id, share)
                     return "reject", gen
+                if d.covered() >= end:
+                    # Covered but no voiced frame (a cough, quiet echo, early audio after a reset): the
+                    # window can no longer change, so waiting cannot help. Fail open at once.
+                    return "fire", gen
                 if time.monotonic() >= deadline:
                     return "fire", gen
                 time.sleep(BARGE_POLL_S)
@@ -1102,6 +1107,7 @@ class VoiceSession:
         def current() -> bool:
             return self._listening and gen == self._listen_gen
 
+        dropped = False
         while current():
             self._set_status("listening")
             try:
@@ -1126,6 +1132,12 @@ class VoiceSession:
                 self.timer.mark("stt_done")
                 text = text.strip()
                 diar = self._decide_speaker()
+                if not current():
+                    # Mic off or close() during the decision wait (up to diar_wait_ms): drop the transcript,
+                    # as the check before the decision does.
+                    self.timer.reset()
+                    dropped = True
+                    break
                 if diar is not None and diar["diar_speaker"] not in (0, "unknown"):
                     if pending is not None:
                         # The barge-in check passed (or failed open) but the turn check says another speaker.
@@ -1139,6 +1151,9 @@ class VoiceSession:
                 self._listening = False
                 if not self._turn_lock.locked():
                     self._set_status("idle")
+            elif dropped and not self._turn_lock.locked():
+                # Mic off found the turn lock held by the decision, so it could not report idle itself.
+                self._set_status("idle")
 
     def _ignore_speaker(self, text: str, diar: dict) -> None:
         """Another speaker's utterance (caller holds _turn_lock): shown as ignored, logged, no turn."""
@@ -1444,12 +1459,20 @@ class VoiceSession:
             aborter.start()
             aborter.join(timeout=2)
         self._stop_speaking({})
+        was_on = False
         with self._diar_lock:
             self._diar_wanted = False   # a load still running will not enable it
             d = self._diarizer
             if self.diarization:
                 self.audio.diarizer = None
                 self.diarization = False
+                was_on = True
+        if was_on:
+            # Pairs the run's diarizer_on in turns.jsonl. Best effort: close() never raises.
+            try:
+                self._write_event({"event": "diarizer_off", "reason": "close"})
+            except Exception:
+                log.exception("writing the diarizer_off event failed")
         if d is not None:
             try:
                 d.stop()
