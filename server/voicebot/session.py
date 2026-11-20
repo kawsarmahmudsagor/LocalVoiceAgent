@@ -135,6 +135,11 @@ class VoiceSession:
         self.diarization = False     # on and attached to the audio
         self.diar_mode = "ultra_low_latency"
         self.diar_wait_ms = 600      # guarded by _state_lock
+        # The current utterance on the diarizer's timeline (sample indices at 16 kHz; None: unknown), set by
+        # the recorder callbacks. Guarded by _state_lock.
+        self._utt_start: int | None = None
+        self._utt_end: int | None = None
+        self._diar_rejects = 0       # barge-ins rejected as another speaker this turn (Task 8); _state_lock
 
     # ---------- wiring ----------
 
@@ -609,6 +614,64 @@ class VoiceSession:
         except Exception:
             log.exception("diarizer reset failed")
 
+    def _pre_samples(self) -> int:
+        """RealtimeSTT's pre-roll (the audio kept from before the VAD start) in samples at 16 kHz."""
+        return int(getattr(self.audio.recorder, "pre_recording_buffer_duration", 0.2) * 16000)
+
+    @staticmethod
+    def _diar_position(d) -> int | None:
+        try:
+            return d.position()
+        except Exception:
+            log.exception("diarizer position failed")
+            return None
+
+    def _decide_speaker(self) -> dict | None:
+        """Who spoke the utterance just transcribed (spec: turn check). None when diarization is off.
+
+        Waits (polling every 20 ms) up to diar_wait_ms for the diarizer's timeline to cover the utterance.
+        Fails open: a timeout, a diarizer that fails or is switched off meanwhile, a window that a reset made
+        invalid, or any diarizer exception gives "unknown", which gets a turn."""
+        d = self._active_diarizer()
+        if d is None:
+            return None
+        with self._state_lock:
+            start, end, wait_ms = self._utt_start, self._utt_end, self.diar_wait_ms
+        self.timer.mark("diar_start")
+        speaker: int | str = "unknown"
+        lag = 0
+        try:
+            if start is not None and end is not None and start < end:
+                covered = d.covered()
+                lag = max(0, end - covered)
+                deadline = time.monotonic() + wait_ms / 1000
+                while covered < end and time.monotonic() < deadline and self._active_diarizer() is d:
+                    time.sleep(0.02)
+                    covered = d.covered()
+                if covered >= end and self._active_diarizer() is d:
+                    found = d.speaker_between(start, end)
+                    if found is not None:
+                        speaker = found
+        except Exception:
+            log.exception("speaker decision failed; passing the turn as unknown")
+            speaker = "unknown"
+        self.timer.mark("diar_done")
+        return {"diarization": True, "diar_mode": d.mode, "diar_speaker": speaker, "diar_lag_ms": round(lag / 16)}
+
+    def _diar_turn_fields(self) -> dict:
+        """The diarization fields of a turn record with no speaker decision (typed turns, or off)."""
+        d = self._active_diarizer()
+        rtf = None
+        if d is not None:
+            try:
+                rtf = d.rtf()
+            except Exception:
+                log.exception("diarizer rtf failed")
+        with self._state_lock:
+            rejects = self._diar_rejects
+        return {"diarization": d is not None, "diar_mode": d.mode if d is not None else None,
+                "diar_speaker": None, "diar_lag_ms": None, "diar_rejects": rejects, "diar_rtf": rtf}
+
     # ---------- v3: RAG settings (spec §4.5) ----------
 
     def _update_rag(self, cmd: dict) -> None:
@@ -775,8 +838,14 @@ class VoiceSession:
     # both taking locks of their own) only after releasing it.
 
     def on_recording_start(self) -> None:
+        d = self._active_diarizer()
         with self._state_lock:
             self._recording = True
+            # The utterance window starts before the VAD start by the recorder's pre-roll. A stale window
+            # from before diarization was switched on must not be reused, so it is cleared when off.
+            pos = self._diar_position(d) if d is not None else None
+            self._utt_start = max(0, pos - self._pre_samples()) if pos is not None else None
+            self._utt_end = None
             if self._barge_turn is None or self._barge_fired:
                 return
             turn = self._barge_turn
@@ -786,8 +855,10 @@ class VoiceSession:
             self._fire_barge(turn)
 
     def on_recording_stop(self) -> None:
+        d = self._active_diarizer()
         with self._state_lock:
             self._recording = False
+            self._utt_end = self._diar_position(d) if d is not None else None
             if self._barge_turn is None or self._barge_fired:
                 return
             if self._barge_mode == "words" and self.timer.has("barge_onset"):
@@ -917,12 +988,28 @@ class VoiceSession:
                 continue
             with self._turn_lock:
                 self.timer.mark("stt_done")
-                self._run_turn(text.strip(), source="voice")
+                text = text.strip()
+                diar = self._decide_speaker()
+                if diar is not None and diar["diar_speaker"] not in (0, "unknown"):
+                    self._ignore_speaker(text, diar)
+                    continue
+                self._run_turn(text, source="voice", diar_fields=diar)
         if gen == self._listen_gen:  # an older run must not switch off a newer one
             if self._listening:
                 self._listening = False
                 if not self._turn_lock.locked():
                     self._set_status("idle")
+
+    def _ignore_speaker(self, text: str, diar: dict) -> None:
+        """Another speaker's utterance (caller holds _turn_lock): shown as ignored, logged, no turn."""
+        speaker = diar["diar_speaker"]
+        start, done = self.timer.get("diar_start"), self.timer.get("diar_done")
+        wait_ms = round((done - start) * 1000) if start is not None and done is not None else None
+        self._emit({"type": "user_transcript", "text": text, "turn_id": None, "speaker": speaker, "ignored": True})
+        log.info("ignored speaker %d: %r", speaker, text)
+        self._write_event({"event": "diar_ignored", "speaker": speaker, "text": text, "diar_wait_ms": wait_ms,
+                           "diar_mode": diar["diar_mode"]})
+        self.timer.reset()
 
     def _log_false_fire(self, pending: dict) -> None:
         """A fired barge-in whose utterance transcribed as noise: one event record (spec §2 step 3, §4)."""
@@ -951,7 +1038,7 @@ class VoiceSession:
             yield chunk
         self.timer.mark("llm_done")
 
-    def _run_turn(self, text: str, *, source: str) -> None:
+    def _run_turn(self, text: str, *, source: str, diar_fields: dict | None = None) -> None:
         stop_event = threading.Event()
         with self._state_lock:
             self._turn_id += 1
@@ -965,6 +1052,9 @@ class VoiceSession:
             voice, self._pending_voice = self._pending_voice, None
             messages = self.conversation.messages(text)
         rag_settings = self.rag.settings if self.rag is not None else None  # the RAG switch at turn start
+        diar_record = self._diar_turn_fields()   # the diarization switch at turn start
+        if diar_fields is not None:   # a voice turn's speaker decision
+            diar_record.update(diar_fields)
         rag_on = rag_settings is not None and rag_settings.enabled
         rag_fields: dict = {
             "rag_enabled": rag_on,
@@ -1017,7 +1107,10 @@ class VoiceSession:
         stopper = self._stopper
         if stopper is not None:
             stopper.join(timeout=5)  # let the previous turn's stop finish before playing again
-        self._emit({"type": "user_transcript", "text": text, "turn_id": turn_id})
+        transcript_event = {"type": "user_transcript", "text": text, "turn_id": turn_id}
+        if diar_fields is not None:
+            transcript_event["speaker"] = diar_fields["diar_speaker"]
+        self._emit(transcript_event)
         fire_now = False
         with self._state_lock:   # barge-in settings are read once per turn (spec §2)
             barge_mode, barge_min_ms = self.barge_in_mode, self.barge_in_min_ms
@@ -1031,6 +1124,7 @@ class VoiceSession:
             self._barge_min_ms = barge_min_ms
             self._barge_fired = stop_event.is_set()   # a Stop that came before arming keeps it disarmed
             self._barge_false = 0
+            self._diar_rejects = 0
             self._barge_timer = None
             if armed and self._recording and not self._barge_fired:
                 # The user is already mid-utterance (e.g. during a typed turn): no on_recording_start
@@ -1090,7 +1184,9 @@ class VoiceSession:
                 interrupt_fields = {"barge_in_mode": self._barge_mode if armed else "off",
                                     "barge_in_min_ms": barge_min_ms, "barge_false_triggers": self._barge_false,
                                     "heard": heard}
-            self._finish_metrics(turn_id, source, interrupted, params, reply, text, rag_fields, interrupt_fields)
+                diar_record["diar_rejects"] = self._diar_rejects
+            self._finish_metrics(turn_id, source, interrupted, params, reply, text, rag_fields, interrupt_fields,
+                                 diar_record)
         except Exception as e:
             log.exception("turn %d failed", turn_id)
             self._error("llm_error", str(e))
@@ -1160,7 +1256,8 @@ class VoiceSession:
             stop_event.wait(remaining)
 
     def _finish_metrics(self, turn_id: int, source: str, interrupted: bool, params: GenerationParams,
-                        reply: str, transcript: str, rag_fields: dict, interrupt_fields: dict) -> None:
+                        reply: str, transcript: str, rag_fields: dict, interrupt_fields: dict,
+                        diar_record: dict) -> None:
         report = self.timer.report()
         metrics = {"type": "metrics", "turn_id": turn_id, "source": source, "interrupted": interrupted, **report}
         self._emit(metrics)
@@ -1179,6 +1276,7 @@ class VoiceSession:
                           tts_model=m.get("tts"), runtime=self.models.runtime())
         record.update(rag_fields)
         record.update(interrupt_fields)
+        record.update(diar_record)
         record["word_align"] = self.word_align
         try:
             self.metrics_sink(record)

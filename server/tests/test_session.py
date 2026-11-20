@@ -1057,3 +1057,73 @@ def test_reenable_after_overflow_reports_errors_again(make, diar, events, audio,
     diar.fire("overflow", "50 frames dropped")
     assert [e["state"] for e in diar_events(events)].count("error") == 2 and s.diarization is False
     assert [r["reason"] for r in sink if r.get("event") == "diarizer_off"] == ["overflow", "overflow"]
+
+
+# ---------- v4 Task 7: turn check ----------
+
+def voice_turn(s, recorder, events, text="Hello there"):
+    s.on_recording_start(); s.on_recording_stop(); recorder.texts.append(text)
+    return wait_for(lambda: next((e for e in events if e["type"] == "user_transcript"), None))
+
+def listening_diar_session(make, diar, events):
+    s = diar_session(make, diar); turn_on(s, events)
+    s.handle({"type": "start_listening"}); wait_for(lambda: s.audio.recorder.waiting)
+    return s
+
+def test_speaker_zero_is_answered_and_tagged(make, diar, events, recorder, sink, conv):
+    diar.pos, diar.cov = 16000, 16000
+    s = listening_diar_session(make, diar, events); ev = voice_turn(s, recorder, events)
+    assert ev["speaker"] == 0 and ev["turn_id"] == 1 and "ignored" not in ev
+    r = wait_for(lambda: next((x for x in sink if "event" not in x), None))
+    assert r["diarization"] is True and r["diar_speaker"] == 0 and r["diar_mode"] == "ultra_low_latency"
+    assert isinstance(r["spans"]["diar_wait_ms"], int) and r["diar_rtf"] == 0.1 and r["diar_lag_ms"] == 0
+    assert diar.windows[0] == (16000 - 3200, 16000)                    # 0.2 s pre-roll at 16 kHz
+
+def test_other_speaker_is_ignored_and_logged(make, diar, events, recorder, sink, conv, backend):
+    diar.pos = diar.cov = 16000; diar.speaker = 1
+    s = listening_diar_session(make, diar, events); ev = voice_turn(s, recorder, events, "Not you")
+    assert ev == {"type": "user_transcript", "text": "Not you", "turn_id": None, "speaker": 1, "ignored": True}
+    rec = wait_for(lambda: next((x for x in sink if x.get("event") == "diar_ignored"), None))
+    assert rec["speaker"] == 1 and rec["text"] == "Not you" and isinstance(rec["diar_wait_ms"], int)
+    time.sleep(0.05); assert backend.calls == [] and conv.messages("x")[1:-1] == []
+
+def test_unknown_passes(make, diar, events, recorder, backend):
+    diar.pos = diar.cov = 16000; diar.speaker = None
+    s = listening_diar_session(make, diar, events); assert voice_turn(s, recorder, events)["speaker"] == "unknown"
+    wait_for(lambda: backend.calls)
+
+def test_timeout_passes_as_unknown(make, diar, events, recorder, sink):
+    diar.pos, diar.cov = 16000, 0                                     # the timeline never catches up
+    s = listening_diar_session(make, diar, events)
+    s.handle({"type": "update_settings", "diar_wait_ms": 100})
+    assert voice_turn(s, recorder, events)["speaker"] == "unknown"
+    r = wait_for(lambda: next((x for x in sink if "event" not in x), None))
+    assert 90 <= r["spans"]["diar_wait_ms"] <= 400 and r["diar_lag_ms"] == 1000
+
+def test_diarizer_failure_during_wait_passes_at_once(make, diar, events, recorder):   # Review Focus 1
+    diar.pos, diar.cov = 16000, 0
+    s = listening_diar_session(make, diar, events); s.handle({"type": "update_settings", "diar_wait_ms": 2000})
+    s.on_recording_start(); s.on_recording_stop(); recorder.texts.append("Hello there")
+    time.sleep(0.1); t0 = time.monotonic(); diar.on_error("error", "boom")
+    ev = wait_for(lambda: next((e for e in events if e["type"] == "user_transcript"), None))
+    assert ev["speaker"] == "unknown" and time.monotonic() - t0 < 0.5
+
+def test_reset_mid_utterance_gives_unknown(make, diar, events, recorder):            # Review Focus 2
+    diar.pos = diar.cov = 16000
+    s = listening_diar_session(make, diar, events); s.on_recording_start()
+    diar.pos = diar.cov = 800; s.handle({"type": "clear"})                # clock restarted below the start
+    s.on_recording_stop(); recorder.texts.append("Hello there")
+    assert wait_for(lambda: next((e for e in events if e["type"] == "user_transcript"), None))["speaker"] == "unknown"
+
+def test_typed_turn_records_diarization_without_speaker(make, diar, events, sink):     # Review Focus 5
+    s = diar_session(make, diar); turn_on(s, events)
+    s.handle({"type": "send_text", "text": "Hi"})
+    r = wait_for(lambda: next((x for x in sink if "event" not in x), None))
+    assert r["diarization"] is True and r["diar_speaker"] is None and r["spans"]["diar_wait_ms"] is None
+    assert "speaker" not in next(e for e in events if e["type"] == "user_transcript")
+
+def test_diarization_off_records_and_events_like_v3(session, events, sink):
+    session.handle({"type": "send_text", "text": "Hi"}); r = wait_for(lambda: sink and sink[-1])
+    assert r["diarization"] is False and r["diar_mode"] is None and r["diar_speaker"] is None
+    assert r["diar_rtf"] is None and r["diar_rejects"] == 0
+    assert "speaker" not in next(e for e in events if e["type"] == "user_transcript")
