@@ -110,3 +110,36 @@ def test_stop_called_from_on_error_does_not_join_itself():
     while any(t.name == "diarizer" and t.is_alive() for t in threading.enumerate()) and time.monotonic() < end:
         time.sleep(0.01)
     assert not any(t.name == "diarizer" and t.is_alive() for t in threading.enumerate())
+
+
+class FakeProc:
+    num_samples_first_audio_chunk, num_samples_per_audio_chunk, num_mel_frames_per_step = 800, 640, 4
+    def __init__(self): self.calls, self.mode = [], None
+    def set_streaming_mode(self, m): self.mode = m
+    def audio_chunk_start(self, mel): return mel * 160 - 160          # overlapping windows, like look-back
+    def __call__(self, audio, sampling_rate, is_streaming, is_first_audio_chunk):
+        self.calls.append((len(audio), is_first_audio_chunk)); return FakeInputs()
+
+class FakeInputs:
+    def to(self, *a, **k): return self
+    def keys(self): return []
+    def __getitem__(self, k): raise KeyError(k)
+
+class FakeNet:
+    dtype, device = "bf16", "cpu"
+    def __init__(self): self.caches = []
+    def __call__(self, speaker_cache=None, **kw):
+        import torch
+        self.caches.append(speaker_cache)
+        return type("O", (), {"logits": torch.zeros(1, 4, 8), "speaker_cache": len(self.caches)})()
+
+def test_nemotron_stream_chunks_like_the_processor():
+    pytest.importorskip("torch")
+    from voicebot.diarizer import NemotronModel
+    p, net = FakeProc(), FakeNet()
+    m = NemotronModel(processor=p, model=net); m.load(); s = m.open("very_low_latency")
+    assert p.mode == "very_low_latency"
+    assert s.push(np.zeros(700, np.float32)).shape == (0, 8)               # not enough for the first chunk
+    out = s.push(np.zeros(1000, np.float32))                               # 1700 samples: first + one more chunk
+    assert p.calls == [(800, True), (640, False)] and out.shape == (8, 8)
+    assert net.caches == [None, 1]                                         # the cache links the chunks
