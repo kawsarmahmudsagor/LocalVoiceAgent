@@ -159,7 +159,9 @@ export function SettingsPanel({ config, settings, onChange, catalog, switching, 
             min={0} max={1000} step={50}
             disabled={disabled || (settings?.barge_in_mode ?? config.defaults.barge_in_mode) === "off"}
             onChange={v => onChange({ barge_in_min_ms: v })} />
-          <p className="hint">Speak over the bot to stop it. Use headphones for clean measurements.</p>
+          <p className="hint">Speak over the bot to stop it. Use headphones for clean measurements.
+            A short noise can cancel "Voice onset" only when Min speech is above about 650 ms; below that,
+            the latency report counts such false fires afterwards.</p>
         </>
       )}
 

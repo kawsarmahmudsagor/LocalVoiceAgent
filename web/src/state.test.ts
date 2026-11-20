@@ -8,6 +8,15 @@ describe("reducer", () => {
     const s = srv(initialState, cfg); expect(s.settings?.temperature).toBe(0.7);
     const s2 = srv(reducer(s, { kind: "settings", patch: { temperature: 0.1 } }), cfg); expect(s2.settings?.temperature).toBe(0.1);
   });
+  it("config overrides the local barge-in settings (the server may fall back to onset)", () => {
+    let s = srv(initialState, { ...cfg, defaults: { ...cfg.defaults, barge_in_mode: "words", barge_in_min_ms: 200 } });
+    s = reducer(s, { kind: "settings", patch: { temperature: 0.1 } });
+    s = srv(s, { ...cfg, defaults: { ...cfg.defaults, barge_in_mode: "onset", barge_in_min_ms: 300 } });
+    expect(s.settings?.barge_in_mode).toBe("onset"); expect(s.settings?.barge_in_min_ms).toBe(300);
+    expect(s.settings?.temperature).toBe(0.1);            // other local edits stay
+    s = srv(s, cfg);                                      // a config without them keeps them
+    expect(s.settings?.barge_in_mode).toBe("onset");
+  });
   it("tracks forced word alignment from config and word_align events", () => {
     let s = srv(initialState, cfg); expect(s.wordAlign).toEqual({ state: "off", message: null });
     s = srv(initialState, { ...cfg, defaults: { ...cfg.defaults, word_align: true } });

@@ -82,7 +82,12 @@ function applyServer(state: AppState, e: ServerEvent): AppState {
       const wordAlign = state.wordAlign.state === "error" || state.wordAlign.state === "loading"
         ? state.wordAlign
         : { state: config.defaults.word_align ? "ready" as const : "off" as const, message: null };
-      return { ...state, config, wordAlign, settings: state.settings ?? { ...config.defaults } };
+      // Barge-in settings always follow the server: it may have fallen back from "words" to "onset".
+      const barge: Partial<Defaults> = {};
+      if (config.defaults.barge_in_mode !== undefined) barge.barge_in_mode = config.defaults.barge_in_mode;
+      if (config.defaults.barge_in_min_ms !== undefined) barge.barge_in_min_ms = config.defaults.barge_in_min_ms;
+      const settings = state.settings ? { ...state.settings, ...barge } : { ...config.defaults };
+      return { ...state, config, wordAlign, settings };
     }
     case "status":
       return { ...state, status: e.state };
