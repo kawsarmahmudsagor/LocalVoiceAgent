@@ -624,3 +624,109 @@ def test_words_mode_falls_back_when_realtime_unloaded(session_with_models, event
     s.handle({"type": "select_model", "role": "stt_realtime", "slug": "off"})
     cfg = wait_for(lambda: next((e for e in events if e["type"] == "config"), None))
     assert cfg["defaults"]["barge_in_mode"] == "onset" and cfg["barge_words_available"] is False
+
+
+# ---------- barge-in: arming, triggers and fire (Task 4) ----------
+
+class FakeModels:
+    """Just enough of ModelManager for a session whose realtime STT is loaded (words mode)."""
+    current = {"stt_final": "whisper-small-en", "stt_realtime": "nemotron-rt", "tts": "kokoro"}
+    def runtime(self): return "in-process"
+
+
+def armed(make, mode, min_ms=30):
+    """A session in barge-in `mode` with the mic on, inside typed turn 1 ("Hi") that is gated after its
+    first chunk, so the turn is running and armed when this returns."""
+    s = make(models=FakeModels()) if mode == "words" else make()
+    s.handle({"type": "update_settings", "barge_in_mode": mode, "barge_in_min_ms": min_ms})
+    s.handle({"type": "start_listening"}); wait_for(lambda: s.audio.recorder.waiting)
+    s.backend.gate = threading.Event()
+    events = s._emit_fn.__self__          # the make fixture attaches events.append
+    s.handle({"type": "send_text", "text": "Hi"}); wait_for(lambda: "assistant_delta" in types(events))
+    return s
+
+
+def test_mute_kept_when_off_and_skipped_when_armed(gated_session, audio, events):
+    gated_session.handle({"type": "send_text", "text": "Hi"}); wait_for(lambda: "assistant_delta" in types(events))
+    gated_session.backend.gate.set(); wait_for(lambda: "mute:False" in audio.log)
+    assert audio.log == ["mute:True", "play", "mute:False"]
+    audio.log.clear(); events.clear(); gated_session.backend.gate.clear()
+    gated_session.handle({"type": "update_settings", "barge_in_mode": "onset"})
+    gated_session.handle({"type": "start_listening"}); wait_for(lambda: audio.recorder.waiting)
+    gated_session.handle({"type": "send_text", "text": "Hi"}); wait_for(lambda: "assistant_delta" in types(events))
+    gated_session.backend.gate.set(); wait_for(lambda: "assistant_done" in types(events))
+    assert not any(x.startswith("mute:") for x in audio.log)
+
+def test_onset_fires_after_min_ms(make, backend, events, stream):
+    s = armed(make, "onset", 30); s.on_recording_start()
+    ev = wait_for(lambda: next((e for e in events if e["type"] == "barge_in"), None))
+    assert ev["turn_id"] == 1 and wait_for(lambda: stream.stopped)
+    done = wait_for(lambda: next((e for e in events if e["type"] == "assistant_done"), None))
+    assert done["interrupted"] is True
+
+def test_onset_cancelled_by_pause_counts_false_trigger(make, backend, sink, events):
+    s = armed(make, "onset", 200); s.on_recording_start(); s.on_speech_pause(); time.sleep(0.3)
+    assert "barge_in" not in types(events)
+    backend.gate.set(); wait_for(lambda: sink)
+    assert sink[0]["barge_false_triggers"] == 1 and sink[0]["barge_in_mode"] == "onset"
+    assert sink[0]["barge_in_min_ms"] == 200
+
+def test_onset_rearms_when_speech_resumes(make, events):               # Review Focus 1
+    s = armed(make, "onset", 50); s.on_recording_start(); s.on_speech_pause(); s.on_speech_resume()
+    wait_for(lambda: "barge_in" in types(events))
+
+def test_resume_after_recording_stop_does_not_arm(make, events):       # Review Focus 5
+    s = armed(make, "onset", 30); s.on_recording_start(); s.on_speech_pause(); s.on_recording_stop()
+    s.on_speech_resume(); time.sleep(0.15)
+    assert "barge_in" not in types(events)
+
+def test_words_fires_on_real_partial_only(make, events):
+    s = armed(make, "words"); s.on_recording_start(); s.on_partial("you"); time.sleep(0.05)
+    assert "barge_in" not in types(events)
+    s.on_partial("wait a second"); wait_for(lambda: "barge_in" in types(events))
+    assert "user_partial" not in types(events)            # partials are still dropped during a turn
+
+def test_words_recording_stop_without_partial_is_false_trigger(make, backend, sink, events):
+    s = armed(make, "words"); s.on_recording_start(); s.on_partial("you."); s.on_recording_stop()   # "um" is not noise to is_noise
+    time.sleep(0.05); assert "barge_in" not in types(events)
+    backend.gate.set(); wait_for(lambda: sink)
+    assert sink[0]["barge_false_triggers"] == 1 and sink[0]["barge_in_mode"] == "words"
+
+def test_fires_once_and_spans_recorded(make, events, sink):
+    s = armed(make, "onset", 0); s.on_recording_start(); s.on_recording_start()
+    wait_for(lambda: sink); time.sleep(0.05)
+    assert types(events).count("barge_in") == 1
+    d = sink[0]["spans"]["barge_detect_ms"]
+    assert isinstance(d, int) and d >= 0 and sink[0]["interrupted"] is True
+
+def test_not_armed_when_off_or_mic_off(make, backend, events):
+    s = armed(make, "off"); s.on_recording_start(); time.sleep(0.1)
+    assert "barge_in" not in types(events)
+    backend.gate.set(); wait_for(lambda: "assistant_done" in types(events))
+    s.handle({"type": "stop_listening"}); wait_for(lambda: not s.audio.recorder.waiting)
+    s.on_recording_stop()
+    s.handle({"type": "update_settings", "barge_in_mode": "onset", "barge_in_min_ms": 0})
+    events.clear(); backend.gate.clear()
+    s.handle({"type": "send_text", "text": "Again"}); wait_for(lambda: "assistant_delta" in types(events))
+    s.on_recording_start(); time.sleep(0.1)
+    assert "barge_in" not in types(events)
+
+def test_disarmed_after_turn_end(make, backend, events):
+    s = armed(make, "onset", 0); backend.gate.set(); wait_for(lambda: "metrics" in types(events))
+    wait_for(lambda: s._current_turn is None)
+    s.on_recording_start(); time.sleep(0.1)
+    assert "barge_in" not in types(events)
+
+def test_barge_utterance_timing_goes_to_next_turn(make, timer, events):  # Review Focus 2
+    s = armed(make, "onset", 0); timer.mark("speech_end")                # recorder marks during the turn
+    s.on_recording_start()
+    wait_for(lambda: "metrics" in types(events))
+    m = next(e for e in events if e["type"] == "metrics")
+    assert m["source"] == "text" and m["marks"]["speech_end"] is None    # not the typed turn's origin
+    wait_for(lambda: timer.has("speech_end"))                            # kept for the next turn
+
+@pytest.mark.parametrize("cmd", ["stop_listening", "clear"])
+def test_mic_off_and_clear_disarm(make, events, cmd):
+    s = armed(make, "onset", 100); s.on_recording_start()
+    s.handle({"type": cmd}); time.sleep(0.2)
+    assert "barge_in" not in types(events)

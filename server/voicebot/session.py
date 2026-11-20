@@ -92,6 +92,16 @@ class VoiceSession:
         self.rag = rag                        # v3 RagService, or None (RAG not configured)
         self.barge_in_mode = barge_in_mode    # off | onset | words (guarded by _state_lock)
         self.barge_in_min_ms = barge_in_min_ms
+        # Barge-in arming state for the running turn (spec §2), all guarded by _state_lock. The recorder
+        # callbacks below run on RealtimeSTT's threads and check it; a turn that is not armed has
+        # _barge_turn None.
+        self._recording = False
+        self._barge_turn: int | None = None
+        self._barge_mode = "off"
+        self._barge_min_ms = barge_in_min_ms
+        self._barge_fired = False
+        self._barge_false = 0
+        self._barge_timer: threading.Timer | None = None
         # Forced word alignment for TTS engines without word timings: a voicebot.aligner.WordAligner (or None
         # when unavailable), switched on and off from the UI. Its model loads on first use.
         self._word_aligner = word_aligner
@@ -202,14 +212,18 @@ class VoiceSession:
         if not self._listening:
             return
         self._listening = False
+        self._disarm()
         # abort() can block until the recorder acknowledges, so keep it off the caller's thread.
         self._spawn(self.audio.recorder.abort, "stt-abort")
         if not self._turn_lock.locked():
             self._set_status("idle")
 
-    def _stop_speaking(self, _cmd: dict) -> None:
+    def _stop_speaking(self, _cmd: dict, *, turn_id: int | None = None) -> None:
+        """Stop the running reply. With turn_id, only if that turn is still the one running."""
         with self._state_lock:
             ev = self._stop_event
+            if turn_id is not None and self._current_turn != turn_id:
+                return
         if ev is None:
             return
         ev.set()
@@ -391,7 +405,13 @@ class VoiceSession:
     # ---------- v2: model switching (spec §4.4) ----------
 
     def on_partial(self, text: str) -> None:
-        """Realtime STT partial (recorder's on_realtime_transcription_update). Dropped during a turn."""
+        """Realtime STT partial (recorder's on_realtime_transcription_update). Dropped during a turn,
+        after the words-mode barge-in check: the first partial that is not noise fires it."""
+        with self._state_lock:
+            fire = (self._barge_turn if self._barge_turn is not None and not self._barge_fired
+                    and self._barge_mode == "words" and not is_noise(text) else None)
+        if fire is not None:
+            self._fire_barge(fire)
         if self._turn_lock.locked():
             return
         self._emit({"type": "user_partial", "text": text})
@@ -493,7 +513,99 @@ class VoiceSession:
             self._emit({"type": "config", **self.config()})
 
     def _clear(self, _cmd: dict) -> None:
+        self._disarm()
         self.conversation.clear()
+
+    # ---------- barge-in (spec §2) ----------
+    # Public recorder callbacks, called from RealtimeSTT's threads at any time. Each one reads and
+    # changes the arming state under _state_lock, and fires (which emits and calls _stop_speaking,
+    # both taking locks of their own) only after releasing it.
+
+    def on_recording_start(self) -> None:
+        with self._state_lock:
+            self._recording = True
+            if self._barge_turn is None or self._barge_fired:
+                return
+            turn = self._barge_turn
+            self.timer.mark("barge_onset")
+            fire = self._barge_mode == "onset" and self._start_barge_timer_locked()
+        if fire:
+            self._fire_barge(turn)
+
+    def on_recording_stop(self) -> None:
+        with self._state_lock:
+            self._recording = False
+            if (self._barge_turn is not None and not self._barge_fired and self._barge_mode == "words"
+                    and self.timer.has("barge_onset")):
+                self._barge_false += 1   # the recording ended without a real word: a cough or a noise
+                self.timer.unmark("barge_onset")
+
+    def on_speech_pause(self) -> None:
+        """Recorder on_turn_detection_start: the speech paused before the onset timer ran out."""
+        with self._state_lock:
+            t = self._barge_timer
+            if self._barge_turn is None or self._barge_fired or self._barge_mode != "onset" or t is None:
+                return
+            t.cancel()
+            self._barge_timer = None
+            self.timer.unmark("barge_onset")
+            self._barge_false += 1
+
+    def on_speech_resume(self) -> None:
+        """Recorder on_turn_detection_stop: speech resumed inside the same recording, so arm the onset
+        again (RealtimeSTT fires no second on_recording_start). It also fires after a recording ends;
+        _recording is False then and nothing happens."""
+        with self._state_lock:
+            if (self._barge_turn is None or self._barge_fired or self._barge_mode != "onset"
+                    or not self._recording or self._barge_timer is not None):
+                return
+            turn = self._barge_turn
+            self.timer.mark("barge_onset")
+            fire = self._start_barge_timer_locked()
+        if fire:
+            self._fire_barge(turn)
+
+    def _start_barge_timer_locked(self) -> bool:
+        """Start the onset timer (caller holds _state_lock). Returns True when it must fire at once."""
+        if self._barge_timer is not None:
+            return False
+        if self._barge_min_ms <= 0:
+            return True
+        turn = self._barge_turn
+
+        def due() -> None:
+            with self._state_lock:
+                if self._barge_timer is not t:   # cancelled, disarmed or replaced: a late callback
+                    return
+                self._barge_timer = None
+            self._fire_barge(turn)
+        t = threading.Timer(self._barge_min_ms / 1000, due)
+        t.daemon = True
+        self._barge_timer = t
+        t.start()
+        return False
+
+    def _fire_barge(self, turn_id: int | None) -> None:
+        """Fire the barge-in once per armed turn: mark barge_in, tell the browser, stop the reply."""
+        with self._state_lock:
+            if turn_id is None or self._barge_turn != turn_id or self._barge_fired:
+                return
+            self._barge_fired = True
+            if self._barge_timer is not None:
+                self._barge_timer.cancel()
+                self._barge_timer = None
+            # Marked under the lock: the turn disarms under it before timer.reset(), so this
+            # mark can never land on the next turn's timer.
+            self.timer.mark("barge_in")
+        self._emit({"type": "barge_in", "turn_id": turn_id})
+        self._stop_speaking({}, turn_id=turn_id)
+
+    def _disarm(self) -> None:
+        with self._state_lock:
+            if self._barge_timer is not None:
+                self._barge_timer.cancel()
+                self._barge_timer = None
+            self._barge_turn = None
 
     # ---------- loops ----------
 
@@ -607,7 +719,19 @@ class VoiceSession:
         if stopper is not None:
             stopper.join(timeout=5)  # let the previous turn's stop finish before playing again
         self._emit({"type": "user_transcript", "text": text, "turn_id": turn_id})
-        self.audio.mute_input(True)
+        with self._state_lock:   # barge-in settings are read once per turn (spec §2)
+            barge_mode, barge_min_ms = self.barge_in_mode, self.barge_in_min_ms
+            armed = barge_mode != "off" and (source == "voice" or self._listening)
+            self._barge_turn = turn_id if armed else None
+            self._barge_mode = barge_mode if armed else "off"
+            self._barge_min_ms = barge_min_ms
+            self._barge_fired = False
+            self._barge_false = 0
+            self._barge_timer = None
+        if armed:
+            self.timer.hold()    # the barge utterance's STT marks belong to the next turn
+        else:
+            self.audio.mute_input(True)
         try:
             dropped = drain_audio_queue(self.stream)
             if dropped:
@@ -647,16 +771,21 @@ class VoiceSession:
             if reply:
                 self.conversation.add_exchange(text, reply)
             self._emit({"type": "assistant_done", "text": reply, "interrupted": interrupted})
-            self._finish_metrics(turn_id, source, interrupted, params, reply, text, rag_fields)
+            with self._state_lock:
+                barge_fields = {"barge_in_mode": self._barge_mode if armed else "off",
+                                "barge_in_min_ms": barge_min_ms, "barge_false_triggers": self._barge_false}
+            self._finish_metrics(turn_id, source, interrupted, params, reply, text, rag_fields, barge_fields)
         except Exception as e:
             log.exception("turn %d failed", turn_id)
             self._error("llm_error", str(e))
         finally:
+            self._disarm()
             with self._state_lock:
                 self._stop_event = None
                 self._current_turn = None
             self.timer.reset()
-            self.audio.mute_input(False)
+            if not armed:
+                self.audio.mute_input(False)
             self._set_status("listening" if self._listening else "idle")
 
     def _retrieve(self, text: str, turn_id: int, rag_fields: dict) -> list[dict] | None:
@@ -709,7 +838,7 @@ class VoiceSession:
             stop_event.wait(remaining)
 
     def _finish_metrics(self, turn_id: int, source: str, interrupted: bool, params: GenerationParams,
-                        reply: str, transcript: str, rag_fields: dict) -> None:
+                        reply: str, transcript: str, rag_fields: dict, barge_fields: dict) -> None:
         report = self.timer.report()
         metrics = {"type": "metrics", "turn_id": turn_id, "source": source, "interrupted": interrupted, **report}
         self._emit(metrics)
@@ -727,6 +856,7 @@ class VoiceSession:
             record.update(stt_final=m.get("stt_final"), stt_realtime=m.get("stt_realtime", "off"),
                           tts_model=m.get("tts"), runtime=self.models.runtime())
         record.update(rag_fields)
+        record.update(barge_fields)
         record["word_align"] = self.word_align
         try:
             self.metrics_sink(record)
@@ -736,6 +866,7 @@ class VoiceSession:
     def close(self) -> None:
         self._listening = False
         self._listen_gen += 1
+        self._disarm()
         # Abort only to wake a listen thread blocked in recorder.text(). RealtimeSTT's abort()
         # waits forever when no text() is running and the recorder was left 'transcribing'
         # (after any Mic on -> off), so never call it unguarded and never wait unbounded.
