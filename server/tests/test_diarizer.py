@@ -143,3 +143,12 @@ def test_nemotron_stream_chunks_like_the_processor():
     out = s.push(np.zeros(1000, np.float32))                               # 1700 samples: first + one more chunk
     assert p.calls == [(800, True), (640, False)] and out.shape == (8, 8)
     assert net.caches == [None, 1]                                         # the cache links the chunks
+
+
+def test_smoke_feed_never_overflows_the_queue():
+    from voicebot.diarizer import _smoke_feed, QUEUE_MAX
+    d = Diarizer(FakeModel()); d.load()
+    pieces = QUEUE_MAX + 175
+    _smoke_feed(d, pcm(pieces * FRAME_SAMPLES * 2))
+    assert d.position() == pieces * FRAME_SAMPLES * 2
+    assert d.covered() == d.position()

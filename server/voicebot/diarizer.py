@@ -298,7 +298,7 @@ class NemotronStream:
                                 speaker_cache=self._cache)
             self._cache = o.speaker_cache
             logits = o.logits[0].float().cpu().numpy()
-            out.append(1.0 / (1.0 + np.exp(-logits)) if OUTPUT_IS_LOGITS else logits)
+            out.append(1.0 / (1.0 + np.exp(-np.clip(logits, -50.0, 50.0))) if OUTPUT_IS_LOGITS else logits)
             if self._first:
                 self._first = False
                 self._mel = proc.num_mel_frames_per_step
@@ -345,6 +345,15 @@ class NemotronModel:
         return NemotronStream(self._proc, self._net)
 
 
+def _smoke_feed(d: Diarizer, pcm: bytes) -> None:
+    """Feed 20 ms pieces like live audio: drain after each, so the queue never overflows."""
+    step = FRAME_SAMPLES * 2 * 2    # 20 ms of int16
+    for i in range(0, len(pcm), step):
+        d.feed(pcm[i:i + step])
+        while d.process(0):
+            pass
+
+
 def _smoke(path: str) -> None:
     import soundfile as sf
 
@@ -356,11 +365,7 @@ def _smoke(path: str) -> None:
     d = Diarizer(model, mode="ultra_low_latency")
     d.load()
     load_s = time.perf_counter() - t0
-    step = FRAME_SAMPLES * 2 * 2    # 20 ms of int16
-    for i in range(0, len(pcm), step):
-        d.feed(pcm[i:i + step])
-    while d.process(0):
-        pass
+    _smoke_feed(d, pcm)
     seconds = len(pcm) / 2 / SAMPLE_RATE
     print(f"load {load_s:.1f}s  audio {seconds:.1f}s  rtf {d.rtf()}  covered {d.covered() / SAMPLE_RATE:.2f}s")
     for s in range(int(seconds)):
