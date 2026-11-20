@@ -50,6 +50,27 @@ def default_catalog(settings: Settings):
                   family="kokoro", voice=s.tts_voice)]
 
 
+def session_callbacks(holder: list) -> dict[str, Callable]:
+    """Recorder callbacks that forward to the session once holder[0] is filled.
+
+    They return None: a truthy return from some RealtimeSTT callbacks aborts transcription.
+    """
+    def to_session(name: str) -> Callable[..., None]:
+        def call(*args) -> None:
+            if holder:
+                getattr(holder[0], name)(*args)
+            return None
+        return call
+
+    return {
+        "on_realtime_transcription_update": to_session("on_partial"),
+        "on_recording_start": to_session("on_recording_start"),
+        "on_recording_stop": to_session("on_recording_stop"),
+        "on_turn_detection_start": to_session("on_speech_pause"),
+        "on_turn_detection_stop": to_session("on_speech_resume"),
+    }
+
+
 def build_session(settings: Settings):
     """The real wiring: LLM backend, the catalog's STT recorder and TTS stream, timing callbacks."""
     from dataclasses import replace
@@ -75,8 +96,7 @@ def build_session(settings: Settings):
     holder: list = []  # the session, once built: partials arrive through the recorder callbacks
     try:
         timer = TurnTimer()
-        parts = [timing_callbacks(timer),
-                 {"on_realtime_transcription_update": lambda text: holder[0].on_partial(text) if holder else None}]
+        parts = [timing_callbacks(timer), session_callbacks(holder)]
         if s.clip_record_dir is not None:
             log.info("recording benchmark clips to %s", s.clip_record_dir)
             parts.append(clip_callbacks(s.clip_record_dir))

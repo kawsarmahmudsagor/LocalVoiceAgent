@@ -1,3 +1,4 @@
+from types import SimpleNamespace as NS
 import threading, pytest
 from fastapi.testclient import TestClient
 from voicebot.config import Settings
@@ -98,3 +99,16 @@ def test_default_catalog_from_v1_settings():
     assert (e["whisper-small-en"].model, e["whisper-small-en"].device, e["whisper-small-en"].options) == \
         ("base.en", "cpu", {"compute_type": "int8"})
     assert e["kokoro"].voice == "af_heart"
+
+def test_session_callbacks_route_to_session():
+    from voicebot.web import session_callbacks
+    calls = []
+    s = NS(on_partial=lambda t: calls.append(("partial", t)), on_recording_start=lambda: calls.append("start"),
+           on_recording_stop=lambda: calls.append("stop"), on_speech_pause=lambda: calls.append("pause"),
+           on_speech_resume=lambda: calls.append("resume"))
+    holder = []; cb = session_callbacks(holder)
+    assert cb["on_recording_start"]() is None and calls == []            # no session yet
+    holder.append(s)
+    cb["on_realtime_transcription_update"]("hi"); cb["on_recording_start"](); cb["on_recording_stop"]()
+    cb["on_turn_detection_start"](); cb["on_turn_detection_stop"]()
+    assert calls == [("partial", "hi"), "start", "stop", "pause", "resume"]
