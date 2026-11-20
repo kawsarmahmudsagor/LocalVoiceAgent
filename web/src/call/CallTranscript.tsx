@@ -24,7 +24,7 @@ export function CallTranscript({ messages, partial }: { messages: ChatMessage[];
             {m.ignored && <span className="mb-1 text-xs text-ink-muted">Another speaker (ignored)</span>}
             <div className={`${BUBBLE} ${mine ? "rounded-br-md bg-user/15 text-ink" : "rounded-bl-md bg-panel text-ink"}`}>
               {m.text}
-              {m.unheard && <span className="text-ink-muted/70 line-through decoration-ink-muted/40"> {m.unheard}</span>}
+              {m.unheard && <span className="text-ink-muted line-through decoration-ink-muted/60"> {m.unheard}</span>}
               {m.streaming && <span aria-hidden="true" className="ml-0.5 inline-block h-4 w-1.5 animate-pulse rounded-sm bg-agent align-middle motion-reduce:animate-none" />}
             </div>
             {m.interrupted && <span className="mt-1 text-xs text-ink-muted">Interrupted</span>}

@@ -37,9 +37,9 @@ export function ConversationPane({ id, open, onClose, messages, partial, connect
       ].join(" ")}>
       <div className="flex h-full w-full flex-col @4xl/call-root:w-[400px]">
         <header className="flex h-14 shrink-0 items-center justify-between border-b border-line pl-5 pr-2">
-          <h2 className="text-base font-semibold">Conversation</h2>
+          <h2 className="font-display text-base font-semibold">Conversation</h2>
           <button type="button" onClick={onClose} aria-label="Close conversation"
-            className="grid size-11 place-items-center rounded-full text-ink-muted outline-none transition-colors hover:bg-white/[0.08] hover:text-ink focus-visible:ring-[3px] focus-visible:ring-ink/60">
+            className="grid size-11 place-items-center rounded-full text-ink-muted outline-none transition-colors hover:bg-white/[0.08] hover:text-ink focus-visible:ring-[3px] focus-visible:ring-ring/60">
             <XIcon aria-hidden="true" className="size-5" />
           </button>
         </header>

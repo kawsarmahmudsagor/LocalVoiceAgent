@@ -130,6 +130,10 @@ export function useVoiceSession(init: (s: AppState) => AppState = s => s): Voice
     };
   }, [stopMic, cutPlayback]);
 
+  // Stable, so per-frame level readers (call page) do not restart on every render.
+  const agentLevel = useCallback(() => player.current?.level() ?? 0, []);
+  const userLevel = useCallback(() => mic.current?.level() ?? 0, []);
+
   const toggleMicNow = async () => {
     player.current?.resume();
     const s = socket.current;
@@ -203,7 +207,7 @@ export function useVoiceSession(init: (s: AppState) => AppState = s => s): Voice
       speakerMuted.current = muted;
       player.current?.setMuted(muted);
     },
-    agentLevel: () => player.current?.level() ?? 0,
-    userLevel: () => mic.current?.level() ?? 0,
+    agentLevel,
+    userLevel,
   };
 }

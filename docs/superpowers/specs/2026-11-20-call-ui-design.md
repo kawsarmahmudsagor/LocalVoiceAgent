@@ -4,9 +4,11 @@ Date: 2026-11-20. Branch: `feat/call-UI-integration` (from `main`).
 
 ## 1. Goal
 
-Add a second web page, `/call`, that looks and behaves like the call screen the TelcoAIAgent
-frontend had (its `components/app/call/*` and `agent-session-block.tsx`, deleted in Telco commit
-`a1d8317`; read them at `a1d8317^`). The current playground at `/` stays exactly as it is.
+Add a second web page, `/call`, that looks and behaves like the call screen of the
+RealEstateAgent frontend (`frontend/components/app/call/*`, `welcome-view.tsx` and
+`agents-ui/blocks/agent-session-view-01/components/agent-session-block.tsx`). TelcoAIAgent's
+deleted copy (commit `a1d8317^`) is the same code; RealEstateAgent is the visual reference
+(changed by the user on 2026-11-20). The current playground at `/` stays exactly as it is.
 
 `/call` has:
 
@@ -26,7 +28,8 @@ It shows no latency readout; latency stays on `/`.
 | Styling | Tailwind CSS v4 + `motion` + `lucide-react`, as Telco used |
 | Page split | Two Vite pages; Tailwind loads only on `/call` |
 | Telco card overlay (packages, confirm codes) | Dropped: Telco-specific |
-| Telco avatar SVG | Not reused (it is branded "Horizon Realty agent"); draw a neutral one |
+| Look | RealEstateAgent's dark call tokens (night river, mint evergreen, brass), Bricolage Grotesque + Public Sans (bundled via `@fontsource-variable`), its portrait avatar and start-screen layout |
+| Brand | No "Horizon Realty": the avatar is relabelled "Voice agent" and its lapel pin removed; the start mark keeps the sound arcs and sun, not the towers; titles say "Voice agent" |
 | Implementation skills | `frontend-design` for visual direction, `ui-ux-pro-max` for accessibility, touch targets and motion checks |
 
 ## 3. Architecture

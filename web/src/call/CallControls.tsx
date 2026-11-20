@@ -1,10 +1,10 @@
 import { MicIcon, MicOffIcon, PhoneOffIcon, Volume2Icon, VolumeXIcon } from "lucide-react";
 
 const ROUND =
-  "grid shrink-0 place-items-center rounded-full outline-none transition-colors focus-visible:ring-[3px] focus-visible:ring-ink/60 disabled:opacity-50";
+  "grid shrink-0 place-items-center rounded-full outline-none transition-colors focus-visible:ring-[3px] focus-visible:ring-ring/60 disabled:opacity-50";
 const QUIET = "size-12 @5xl:size-14 border border-line bg-white/[0.06] text-ink backdrop-blur-md hover:bg-white/[0.12]";
 // A switched-off mic or speaker reads as a filled light button.
-const QUIET_OFF = "border-transparent bg-ink text-stage hover:bg-ink/85";
+const QUIET_OFF = "border-transparent bg-ink text-on-user hover:bg-ink/85";
 
 interface CallControlsProps {
   micOn: boolean;
@@ -27,7 +27,7 @@ export function CallControls({ micOn, speakerMuted, disabled, onToggleMic, onEnd
         {micOn ? <MicIcon aria-hidden="true" className="size-6" /> : <MicOffIcon aria-hidden="true" className="size-6" />}
       </button>
       <button type="button" onClick={onEndCall} aria-label="End call" title="End call"
-        className={`${ROUND} size-14 bg-danger text-white shadow-[0_8px_28px_-6px_var(--color-danger)] hover:brightness-110 @5xl:size-16`}>
+        className={`${ROUND} size-14 bg-hangup text-white shadow-[0_8px_28px_-6px_var(--color-hangup)] hover:brightness-110 @5xl:size-16`}>
         <PhoneOffIcon aria-hidden="true" className="size-7" />
       </button>
       <button type="button" onClick={onToggleSpeaker} aria-label={speakerLabel} aria-pressed={speakerMuted}

@@ -44,26 +44,6 @@ function UserHalo({ level, active }: { level: () => number; active: boolean }) {
   );
 }
 
-/** The agent: an ink orb with three voice lines, not a face. */
-function Orb() {
-  return (
-    <svg viewBox="0 0 100 100" aria-hidden="true" className="size-full">
-      <defs>
-        <radialGradient id="call-orb" cx="38%" cy="32%" r="75%">
-          <stop offset="0" stopColor="#2a3550" />
-          <stop offset="1" stopColor="#141b2a" />
-        </radialGradient>
-      </defs>
-      <circle cx="50" cy="50" r="50" fill="url(#call-orb)" />
-      <g stroke="var(--color-agent)" strokeWidth="5" strokeLinecap="round">
-        <line x1="36" y1="42" x2="36" y2="58" />
-        <line x1="50" y1="32" x2="50" y2="68" />
-        <line x1="64" y1="40" x2="64" y2="60" />
-      </g>
-    </svg>
-  );
-}
-
 interface CallAvatarProps {
   status: Status;
   speakerMuted: boolean;
@@ -78,14 +58,14 @@ export function CallAvatar({ status, speakerMuted, agentLevel, userLevel, classN
     <div className={`relative aspect-square ${className}`}>
       <AgentRings level={agentLevel} active={activity === "agent"} muted={speakerMuted} />
       <UserHalo level={userLevel} active={activity === "user"} />
-      {/* Thinking: a slow brass arc around the orb. */}
+      {/* Thinking: a slow brass arc around the portrait. */}
       <svg aria-hidden="true" viewBox="0 0 100 100"
         className={`absolute -inset-[5%] size-[110%] text-agent transition-opacity duration-300 animate-spin [animation-duration:2.4s] motion-reduce:animate-none ${status === "thinking" ? "opacity-100" : "opacity-0"}`}>
         <circle cx="50" cy="50" r="48" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"
           strokeDasharray="70 232" />
       </svg>
-      <div className="relative size-full overflow-hidden rounded-full ring-2 ring-agent/40 ring-offset-4 ring-offset-stage">
-        <Orb />
+      <div className="relative size-full overflow-hidden rounded-full bg-panel ring-2 ring-agent/50 ring-offset-4 ring-offset-stage">
+        <img src="/agent-avatar.svg" alt="Voice agent" draggable={false} className="size-full select-none object-cover" />
       </div>
     </div>
   );

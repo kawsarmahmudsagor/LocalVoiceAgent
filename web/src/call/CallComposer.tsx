@@ -24,13 +24,13 @@ export function CallComposer({ disabled, onSend, focusWhen }: CallComposerProps)
       onSend(text.trim());
       setText("");
     }}
-      className="flex h-12 items-center gap-2 rounded-full border border-line bg-white/[0.06] pl-4 pr-1.5 focus-within:border-user/50">
+      className="flex h-12 items-center gap-2 rounded-full border border-line bg-white/[0.06] pl-4 pr-0.5 focus-within:border-user/50">
       <label htmlFor="call-message" className="sr-only">Message the agent</label>
       <input id="call-message" ref={input} value={text} onChange={e => setText(e.target.value)} autoComplete="off"
         placeholder="Type a message…"
         className="min-w-0 flex-1 bg-transparent text-[15px] text-ink outline-none placeholder:text-ink-muted" />
       <button type="submit" disabled={!canSend} aria-label="Send message"
-        className="grid size-10 shrink-0 place-items-center rounded-full bg-user text-stage outline-none transition-[opacity,filter] hover:brightness-110 focus-visible:ring-[3px] focus-visible:ring-ink/60 disabled:opacity-40">
+        className="grid size-11 shrink-0 place-items-center rounded-full bg-user text-on-user outline-none transition-[opacity,filter] hover:brightness-110 focus-visible:ring-[3px] focus-visible:ring-ring/60 disabled:opacity-40">
         <SendHorizontalIcon aria-hidden="true" className="size-[18px]" />
       </button>
     </form>
