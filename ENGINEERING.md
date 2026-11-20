@@ -81,7 +81,37 @@ Each spec ends with numbered **success criteria**. Each plan breaks the work int
 | Chroma, sentence-transformers (`BAAI/bge-small-en-v1.5`), Ollama (`nomic-embed-text`) | v3 RAG vector store and embedders |
 | `nvidia/Nemotron-3-Diarization` (model card, transformers docs) | v4 streaming speaker diarization |
 
-### 2.3 Facts verified in the code before designing
+### 2.3 Models used, by use case
+
+Defaults are what a fresh `.env` starts with. The other STT and TTS entries are the shortlist in `server/voicebot/catalog.toml` and can be switched from the UI while idle.
+
+| Use case | Model | Engine / runtime | Device | Notes |
+|---|---|---|---|---|
+| **LLM** (default on the VM) | `unsloth/Qwen3.5-9B-GGUF`, Q4_K_M (5.68 GB) | llama.cpp `llama-server` (Docker on the VM, Windows binary in v1) | GPU | `LLM_BACKEND=llamacpp`; vision projector skipped (`--no-mmproj`), thinking off |
+| LLM (alternative) | `Qwen/Qwen3.5-9B` (19.3 GB, loaded in 4-bit NF4) | transformers + bitsandbytes | GPU | `LLM_BACKEND=transformers`; deferred on the VM |
+| **Voice activity / turn detection** | WebRTC VAD + Silero VAD | RealtimeSTT built-in | CPU | Decides when speech starts and ends; 0.6 s silence wait |
+| **Final STT** (default) | `small.en` (`whisper-small-en`) | faster-whisper | GPU | v1 baseline, always kept |
+| Final STT | `large-v3-turbo` (`whisper-large-v3-turbo`) | faster-whisper | GPU | Best Whisper accuracy |
+| Final STT | Parakeet TDT 0.6B v3, Q4_K_M GGUF (`transcribe-cpp-parakeet-q4`) | transcribe.cpp | GPU | RealtimeSTT's "lowest-latency warm GPU final" |
+| Final STT | `nvidia/parakeet-tdt-0.6b-v3`, int8 (`sherpa-parakeet-v3`) | sherpa-onnx | CPU, 7 threads | Tuned CPU config (spinning off) |
+| Final STT | `Qwen/Qwen3-ASR-1.7B` (`qwen3-asr-1-7b`) | qwen-asr | GPU | Added on user request |
+| **Realtime STT** (default: off) | Nemotron 3.5 ASR streaming 0.6B, 560 ms, int8 (`nemotron-rt`) | sherpa-onnx, true streaming | CPU, 4 threads | Live partial transcripts; needed for `words` barge-in |
+| Realtime STT | `tiny.en` (`whisper-tiny-en-rt`) | faster-whisper, re-decodes the growing buffer | GPU | Classic baseline |
+| **TTS** (default) | Kokoro (`kokoro`), voice `af_heart` | RealtimeTTS `KokoroEngine` | GPU on the VM (CPU in v1) | v1 baseline, always kept |
+| TTS | Qwen3-TTS 12 Hz 0.6B Base, Q8_0 (`qwen-cuda`) | RealtimeTTS `QwenEngine` | GPU | RealtimeTTS's recommended engine; clones `assets/ref_voice.wav` |
+| TTS | Inflect-Micro-v2 (`inflect-cuda`) | RealtimeTTS `InflectEngine` (PyTorch) | GPU | Fast fixed English voice |
+| TTS | Piper `en_US-lessac-medium` (`piper`) | RealtimeTTS `PiperEngine` | CPU | Fastest CPU engine |
+| TTS | Coqui XTTS v2 (`coqui-xtts-v2`) | RealtimeTTS `CoquiEngine` | GPU | Voice cloning from `assets/ref_voice.wav`; added on user request |
+| **Speaker diarization** (v4, default off) | `nvidia/Nemotron-3-Diarization` (100M params, up to 8 speakers) | transformers 5.23.0, streaming, bf16 | GPU | Modes: 0.32 s (default), 0.64 s, 1.04 s |
+| **RAG embeddings** (default) | `BAAI/bge-small-en-v1.5` (33M params, 384 dims) | sentence-transformers | GPU (`RAG_EMBED_DEVICE`) | English, query prefix on queries |
+| RAG embeddings | `nomic-embed-text` (137M params, 768 dims), or any pulled Ollama embedder | Ollama in Docker | GPU | Switchable in the RAG tab |
+| **Vector store** | Chroma `PersistentClient`, cosine | in process | — | One collection per embedder |
+
+**Benchmarked but not in the server catalog:**
+- `kroko-en-128-rt` (Kroko ONNX streaming): its bundled ONNX Runtime breaks sherpa-onnx in the same venv, so it stays in its bench venv only.
+- `chatterbox` (Chatterbox TTS): in the pool, but not in the catalog. The repo does not record why.
+
+### 2.4 Facts verified in the code before designing
 
 The specs only build on behaviour that was checked in the vendored source, not assumed:
 
