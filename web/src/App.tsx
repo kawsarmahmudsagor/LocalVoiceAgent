@@ -1,6 +1,3 @@
-import { useCallback, useEffect, useReducer, useRef } from "react";
-import { startMic } from "./audio/mic";
-import { createPlayer, type Player } from "./audio/player";
 import { ChatTranscript } from "./components/ChatTranscript";
 import { Composer } from "./components/Composer";
 import { SettingsPanel } from "./components/SettingsPanel";
@@ -8,14 +5,10 @@ import { StatusBar } from "./components/StatusBar";
 import { RagPanel } from "./components/RagPanel";
 import { SystemPromptPanel } from "./components/SystemPromptPanel";
 import { Tabs } from "./components/Tabs";
-import type { Defaults, RagSettings, Role } from "./protocol";
-import { createExclusive } from "./exclusive";
 import { deleteDocument, ragLocked, reindexAll, uploadDocuments } from "./rag";
-import { initialState, reducer, type AppState } from "./state";
-import { VoiceSocket, socketUrl } from "./ws";
-import { HeardText, SentenceWords, type TurnWord } from "./words";
+import { useVoiceSession } from "./session/useVoiceSession";
+import type { AppState } from "./state";
 
-const SETTINGS_DEBOUNCE_MS = 300;
 const TAB_KEY = "voicebot.tab";
 
 function initState(base: AppState): AppState {
@@ -27,165 +20,15 @@ function initState(base: AppState): AppState {
 }
 
 export default function App() {
-  const [state, dispatch] = useReducer(reducer, initialState, initState);
-  const socket = useRef<VoiceSocket | null>(null);
-  const player = useRef<Player | null>(null);
-  const playerRate = useRef<number | null>(null);
-  const mic = useRef<{ stop(): void } | null>(null);
-  const turnId = useRef<number | null>(null);
-  const sentenceWords = useRef(new SentenceWords());
-  const heard = useRef(new HeardText());
-  const ackedTurn = useRef<number | null>(null);
-  const pendingPatch = useRef<Partial<Defaults>>({});
-  const debounce = useRef<number | undefined>(undefined);
-
-  const stopMic = useCallback(() => {
-    mic.current?.stop();
-    mic.current = null;
-  }, []);
-
-  // Silence the player and tell the server which words the user actually heard.
-  const cutPlayback = useCallback((id: number) => {
-    player.current?.flush();
-    sentenceWords.current.reset();
-    socket.current?.send({ type: "playback_cut", turn_id: id, heard: heard.current.text(id) });
-  }, []);
-
-  useEffect(() => {
-    // Tell the server when the browser actually starts playing a turn (stage timing).
-    const ackPlayback = () => {
-      const id = turnId.current;
-      if (id == null || ackedTurn.current === id) return;
-      ackedTurn.current = id;
-      socket.current?.send({ type: "playback_started", turn_id: id });
-    };
-
-    const s = new VoiceSocket(socketUrl(), {
-      onOpen: () => dispatch({ kind: "connected", value: true }),
-      onClose: () => {
-        stopMic();
-        player.current?.flush();
-        sentenceWords.current.reset();
-        dispatch({ kind: "connected", value: false });
-      },
-      onEvent: e => {
-        if (e.type === "config" && e.output_format && playerRate.current !== e.output_format.sample_rate) {
-          // First config, or a TTS switch that changed the sample rate: never play at the wrong rate.
-          player.current?.close();
-          player.current = createPlayer(e.output_format, ackPlayback);
-          playerRate.current = e.output_format.sample_rate;
-        }
-        if (e.type === "user_transcript" && !e.ignored && e.turn_id != null) {
-          turnId.current = e.turn_id;
-          player.current?.resetClock(); // the previous reply has finished playing before a new turn starts
-          sentenceWords.current.reset();
-          heard.current.reset(e.turn_id);
-        }
-        if (e.type === "barge_in" && e.turn_id === turnId.current) cutPlayback(e.turn_id);
-        // The reply appears word by word as its audio plays: each word is shown when playback reaches it.
-        const show = (words: TurnWord[]) => {
-          for (const w of words) {
-            const spoken = () => {
-              heard.current.add(w.turn_id, w.word);
-              dispatch({ kind: "spoken", turn_id: w.turn_id, text: w.word });
-            };
-            if (player.current) player.current.schedule(w.at, spoken);
-            else spoken();
-          }
-        };
-        if (e.type === "assistant_segment") {
-          if (e.at_s == null) { // PC speakers: at once
-            heard.current.add(e.turn_id, e.text);
-            dispatch({ kind: "spoken", turn_id: e.turn_id, text: e.text });
-          } else show(sentenceWords.current.segment({ turn_id: e.turn_id, text: e.text, at_s: e.at_s }));
-          return;
-        }
-        if (e.type === "assistant_words") {
-          show(sentenceWords.current.words(e));
-          return;
-        }
-        dispatch({ kind: "server", event: e });
-      },
-      onAudio: buf => player.current?.push(buf),
-    });
-    socket.current = s;
-    return () => {
-      s.close();
-      stopMic();
-      player.current?.close();
-      player.current = null;
-      playerRate.current = null;
-      window.clearTimeout(debounce.current);
-    };
-  }, [stopMic, cutPlayback]);
-
-  const onSettingsChange = (patch: Partial<Defaults>) => {
-    dispatch({ kind: "settings", patch });
-    pendingPatch.current = { ...pendingPatch.current, ...patch };
-    window.clearTimeout(debounce.current);
-    debounce.current = window.setTimeout(() => {
-      socket.current?.send({ type: "update_settings", ...pendingPatch.current });
-      pendingPatch.current = {};
-    }, SETTINGS_DEBOUNCE_MS);
-  };
-
-  // A second click while the permission prompt is open would start a second capture.
-  const micToggle = useRef(createExclusive()).current;
-
-  const onToggleMic = () => micToggle(toggleMic);
-
-  const toggleMic = async () => {
-    player.current?.resume();
-    const s = socket.current;
-    if (!s || !state.config) return;
-    if (state.listening) {
-      stopMic();
-      s.send({ type: "stop_listening" });
-      dispatch({ kind: "listening", value: false });
-      return;
-    }
-    if (state.config.audio_io === "browser") {
-      try {
-        mic.current = await startMic(pcm => s.sendAudio(pcm));
-      } catch (err) {
-        const denied = err instanceof DOMException && (err.name === "NotAllowedError" || err.name === "SecurityError");
-        dispatch({
-          kind: "error",
-          message: denied
-            ? "Microphone permission denied — typing still works."
-            : `Microphone unavailable (${err instanceof Error ? err.message : String(err)}) — typing still works.`,
-        });
-        return;
-      }
-    }
-    s.send({ type: "start_listening" });
-    dispatch({ kind: "listening", value: true });
-  };
-
-  const onSend = (text: string) => {
-    player.current?.resume();
-    socket.current?.send({ type: "send_text", text });
-  };
-
-  const onStop = () => {
-    socket.current?.send({ type: "stop_speaking" });
-    if (turnId.current != null) cutPlayback(turnId.current);
-    else {
-      player.current?.flush();
-      sentenceWords.current.reset();
-    }
-  };
-
-  const onSelectModel = (role: Role, slug: string) => {
-    socket.current?.send({ type: "select_model", role, slug });
-  };
-
-  const onClear = () => {
-    socket.current?.send({ type: "clear" });
-    dispatch({ kind: "clear" });
-    player.current?.flush();
-    sentenceWords.current.reset();
-  };
+  const session = useVoiceSession(initState);
+  const { state, dispatch } = session;
+  const onSettingsChange = session.updateSettings;
+  const onToggleMic = session.toggleMic;
+  const onSend = session.send;
+  const onStop = session.stop;
+  const onClear = session.clear;
+  const onSelectModel = session.selectModel;
+  const onUpdateRag = session.updateRag;
 
   const reportRagError = (err: unknown) =>
     dispatch({ kind: "error", message: err instanceof Error ? err.message : String(err) });
@@ -193,10 +36,6 @@ export default function App() {
   const onTab =(tab: AppState["tab"]) => {
     dispatch({ kind: "tab", tab });
     try { window.localStorage.setItem(TAB_KEY, tab); } catch { /* storage may be blocked */ }
-  };
-
-  const onUpdateRag = (patch: Partial<RagSettings>) => {
-    socket.current?.send({ type: "update_rag", ...patch });
   };
 
   const ragDisabled = ragLocked(state.status, state.connected);
