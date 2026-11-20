@@ -1127,3 +1127,37 @@ def test_diarization_off_records_and_events_like_v3(session, events, sink):
     assert r["diarization"] is False and r["diar_mode"] is None and r["diar_speaker"] is None
     assert r["diar_rtf"] is None and r["diar_rejects"] == 0
     assert "speaker" not in next(e for e in events if e["type"] == "user_transcript")
+
+def first_transcript(events):
+    return wait_for(lambda: next((e for e in events if e["type"] == "user_transcript"), None))
+
+def test_clear_mid_utterance_then_more_speech_gives_unknown(make, diar, events, recorder, backend):   # fix 1a
+    diar.pos = diar.cov = 16000; diar.speaker = 1
+    s = listening_diar_session(make, diar, events); s.on_recording_start()          # start 12800 (old clock)
+    s.handle({"type": "clear"}); diar.pos = diar.cov = 16000                       # 1 s more on the new clock
+    s.on_recording_stop(); recorder.texts.append("Hello there")
+    assert first_transcript(events)["speaker"] == "unknown"; wait_for(lambda: backend.calls)
+
+def test_clear_after_stop_gives_unknown_at_once(make, diar, events, recorder):                         # fix 1b
+    diar.pos = diar.cov = 16000; diar.speaker = 1
+    s = listening_diar_session(make, diar, events); s.handle({"type": "update_settings", "diar_wait_ms": 2000})
+    s.on_recording_start(); s.on_recording_stop()
+    s.handle({"type": "clear"}); diar.pos = diar.cov = 0                           # reset while STT runs
+    t0 = time.monotonic(); recorder.texts.append("Hello there")
+    assert first_transcript(events)["speaker"] == "unknown" and time.monotonic() - t0 < 0.5
+
+def test_clear_during_wait_gives_unknown_at_once(make, diar, events, recorder):                        # fix 1b
+    diar.pos, diar.cov = 16000, 0; diar.speaker = 1
+    s = listening_diar_session(make, diar, events); s.handle({"type": "update_settings", "diar_wait_ms": 2000})
+    s.on_recording_start(); s.on_recording_stop(); recorder.texts.append("Hello there")
+    time.sleep(0.1); t0 = time.monotonic(); s.handle({"type": "clear"}); diar.cov = 16000
+    assert first_transcript(events)["speaker"] == "unknown" and time.monotonic() - t0 < 0.5
+
+def test_next_utterance_start_keeps_the_previous_window(make, diar, events, recorder, sink):            # fix 2
+    diar.pos = diar.cov = 16000; diar.speaker = 1
+    s = listening_diar_session(make, diar, events)
+    s.on_recording_start(); s.on_recording_stop(); diar.pos = 17600; s.on_recording_start()
+    recorder.texts.append("Not you")
+    assert first_transcript(events) == {"type": "user_transcript", "text": "Not you", "turn_id": None,
+                                        "speaker": 1, "ignored": True}
+    assert diar.windows[0] == (12800, 16000)

@@ -139,6 +139,12 @@ class VoiceSession:
         # the recorder callbacks. Guarded by _state_lock.
         self._utt_start: int | None = None
         self._utt_end: int | None = None
+        # The last completed utterance (start, end, epoch), snapshotted at on_recording_stop so a following
+        # on_recording_start cannot clobber it before the decision. Every diarizer reset bumps _diar_epoch and
+        # clears both windows: indices on the old clock are meaningless on the new one. Guarded by _state_lock.
+        # Lock order: _invalidate_window takes _state_lock inside _diar_lock; never take _diar_lock under _state_lock.
+        self._last_window: tuple[int | None, int | None, int] | None = None
+        self._diar_epoch = 0
         self._diar_rejects = 0       # barge-ins rejected as another speaker this turn (Task 8); _state_lock
 
     # ---------- wiring ----------
@@ -464,10 +470,12 @@ class VoiceSession:
             self.diar_mode = mode
             d = self._active_diarizer()
             if d is not None:
+                self._invalidate_window()
                 try:
                     d.set_mode(mode)   # resets the timeline
                 except Exception:
                     log.exception("diarizer set_mode failed")
+                self._invalidate_window()
 
     def _set_diarization(self, on: bool) -> None:
         """Switch speaker diarization. The first switch-on loads the model off the event loop; the browser
@@ -547,6 +555,7 @@ class VoiceSession:
             if not self._diar_wanted or self.diarization:
                 return
             mode = self.diar_mode
+            self._invalidate_window()   # windows from before this run are on another clock
             try:
                 d.set_mode(mode)   # resets: a restart after an error gets a fresh stream
                 d.start()
@@ -577,6 +586,7 @@ class VoiceSession:
             d.reset()
         except Exception:
             log.exception("stopping the diarizer failed")
+        self._invalidate_window()
         log.info("diarizer off: user")
         self._write_event({"event": "diarizer_off", "reason": "user"})
 
@@ -609,10 +619,21 @@ class VoiceSession:
         d = self._active_diarizer()
         if d is None:
             return
+        # Before and after: a decision that snapshotted before the reset sees the first bump, and a
+        # position() read on the old clock between the two is cleared by the second.
+        self._invalidate_window()
         try:
             d.reset()
         except Exception:
             log.exception("diarizer reset failed")
+        self._invalidate_window()
+
+    def _invalidate_window(self) -> None:
+        """The diarizer's clock restarted: no window recorded so far can be decided on."""
+        with self._state_lock:
+            self._diar_epoch += 1
+            self._utt_start = self._utt_end = None
+            self._last_window = None
 
     def _pre_samples(self) -> int:
         """RealtimeSTT's pre-roll (the audio kept from before the VAD start) in samples at 16 kHz."""
@@ -636,7 +657,9 @@ class VoiceSession:
         if d is None:
             return None
         with self._state_lock:
-            start, end, wait_ms = self._utt_start, self._utt_end, self.diar_wait_ms
+            window, epoch, wait_ms = self._last_window, self._diar_epoch, self.diar_wait_ms
+            self._last_window = None   # each completed window is decided once
+        start, end = (None, None) if window is None or window[2] != epoch else window[:2]
         self.timer.mark("diar_start")
         speaker: int | str = "unknown"
         lag = 0
@@ -645,12 +668,15 @@ class VoiceSession:
                 covered = d.covered()
                 lag = max(0, end - covered)
                 deadline = time.monotonic() + wait_ms / 1000
-                while covered < end and time.monotonic() < deadline and self._active_diarizer() is d:
+                # The epoch is read without a lock (an int): a reset during the wait ends it at once.
+                while (covered < end and time.monotonic() < deadline and self._active_diarizer() is d
+                       and self._diar_epoch == epoch):
                     time.sleep(0.02)
                     covered = d.covered()
-                if covered >= end and self._active_diarizer() is d:
+                if covered >= end and self._active_diarizer() is d and self._diar_epoch == epoch:
                     found = d.speaker_between(start, end)
-                    if found is not None:
+                    # A reset that raced speaker_between may have answered from the new clock.
+                    if found is not None and self._diar_epoch == epoch:
                         speaker = found
         except Exception:
             log.exception("speaker decision failed; passing the turn as unknown")
@@ -859,6 +885,7 @@ class VoiceSession:
         with self._state_lock:
             self._recording = False
             self._utt_end = self._diar_position(d) if d is not None else None
+            self._last_window = (self._utt_start, self._utt_end, self._diar_epoch)
             if self._barge_turn is None or self._barge_fired:
                 return
             if self._barge_mode == "words" and self.timer.has("barge_onset"):
