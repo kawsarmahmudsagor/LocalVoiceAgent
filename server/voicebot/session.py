@@ -130,7 +130,8 @@ class VoiceSession:
         self._diar_lock = threading.Lock()
         self._diarizer = None
         self._diar_wanted = False    # the latest on/off request; a load that finishes checks it
-        self._diar_loading = False   # a load thread is running: another "on" does not start a second one
+        self._diar_loading = False   # a switch-on worker is running: another "on" does not start a second one
+        self._diar_stopper: threading.Thread | None = None   # the stop() _on_diar_error spawned
         self.diarization = False     # on and attached to the audio
         self.diar_mode = "ultra_low_latency"
         self.diar_wait_ms = 600      # guarded by _state_lock
@@ -467,9 +468,9 @@ class VoiceSession:
         """Switch speaker diarization. The first switch-on loads the model off the event loop; the browser
         hears {"type": "diarization", "state": "loading" | "ready" | "off" | "error"}, like word_align.
 
-        _diar_wanted records the latest request, and a finished load enables the diarizer only if it is still
-        set, so on -> off (or on -> off -> on -> off) during one load ends off. _diar_loading makes a second
-        "on" during a load wait for that load instead of starting another."""
+        Every switch-on runs on a _switch_on worker. _diar_wanted records the latest request, and the worker
+        enables the diarizer only if it is still set, so on -> off (or on -> off -> on -> off) during one load
+        ends off. _diar_loading makes a second "on" while a worker runs wait for it instead of starting another."""
         if not on:
             self._diarization_off()
             return
@@ -481,8 +482,9 @@ class VoiceSession:
             if self.diarization:
                 self._emit({"type": "diarization", "state": "ready"})
                 return
-            if self._diar_loading:
-                self._emit({"type": "diarization", "state": "loading"})
+            if self._diar_loading:   # the running worker emits ready (or error) for this request too
+                if not self._diarizer.ready:
+                    self._emit({"type": "diarization", "state": "loading"})
                 return
             d = self._diarizer
             if d is None:
@@ -494,37 +496,49 @@ class VoiceSession:
                     self._emit({"type": "diarization", "state": "error",
                                 "message": f"Building the diarizer failed: {e}"})
                     return
-            load = not d.ready
-            if load:
-                self._diar_loading = True
+            self._diar_loading = True
+            if not d.ready:
                 self._emit({"type": "diarization", "state": "loading"})
-        if load:
-            self._spawn(lambda: self._load_diarizer(d), "diarizer-load")
-        else:
-            self._enable_diarizer(d, 0)
+        self._spawn(lambda: self._switch_on(d), "diarizer-on")
 
-    def _load_diarizer(self, d) -> None:
-        t0 = time.monotonic()
-        try:
-            d.load()
-        except Exception as e:
-            log.exception("loading the diarization model failed")
-            with self._diar_lock:
-                self._diar_loading = False
-                wanted, self._diar_wanted = self._diar_wanted, False
-                if wanted:
-                    self._emit({"type": "diarization", "state": "error",
-                                "message": f"Loading the diarization model failed: {e}"})
-            if wanted:
-                self._write_event({"event": "diarizer_off", "reason": "error"})
-            return
+    def _switch_on(self, d) -> None:
+        """The switch-on worker (off the event loop): stop any previous run, load if needed, then enable.
+
+        A run that ended with on_error keeps its thread until a stop: Diarizer.start() returns early while
+        that thread is alive and would not re-arm its once-per-start error report. So wait for the stop
+        _on_diar_error spawned, and stop() again (a no-op without a thread) before set_mode() and start()."""
         with self._diar_lock:
-            self._diar_loading = False
-        self._enable_diarizer(d, round((time.monotonic() - t0) * 1000))
+            stopper = self._diar_stopper
+        if stopper is not None:
+            stopper.join()
+        try:
+            d.stop()
+        except Exception:
+            log.exception("stopping the previous diarizer run failed")
+        t0 = time.monotonic()
+        load_ms = 0
+        if not d.ready:
+            try:
+                d.load()
+            except Exception as e:
+                log.exception("loading the diarization model failed")
+                with self._diar_lock:
+                    self._diar_loading = False
+                    wanted, self._diar_wanted = self._diar_wanted, False
+                    if wanted:
+                        self._emit({"type": "diarization", "state": "error",
+                                    "message": f"Loading the diarization model failed: {e}"})
+                if wanted:
+                    self._write_event({"event": "diarizer_off", "reason": "error"})
+                return
+            load_ms = round((time.monotonic() - t0) * 1000)
+        self._enable_diarizer(d, load_ms)
 
     def _enable_diarizer(self, d, load_ms: int) -> None:
-        """Start and attach d if diarization is still wanted (it may have been switched off while loading)."""
+        """Start and attach d if diarization is still wanted (it may have been switched off while loading).
+        Clears _diar_loading in the same critical section, so an "on" that arrives meanwhile is never lost."""
         with self._diar_lock:
+            self._diar_loading = False
             if not self._diar_wanted or self.diarization:
                 return
             mode = self.diar_mode
@@ -563,16 +577,27 @@ class VoiceSession:
 
     def _on_diar_error(self, reason: str, message: str) -> None:
         """The Diarizer gave up: "overflow" (on the websocket audio thread, inside feed) or "error" (on the
-        diarizer thread). Quick and non-blocking: detach and report. Never stop() here: that thread is ending."""
+        diarizer thread). Quick and non-blocking: detach and report. stop() joins the diarizer thread, so it
+        runs on a thread of its own; after an overflow that thread is still alive and must be stopped, or a
+        later start() would return early and never report another error. _switch_on waits for it."""
         with self._diar_lock:
             if not self.diarization:
                 return
+            d = self._diarizer
             self.audio.diarizer = None
             self.diarization = False
             self._diar_wanted = False
             self._emit({"type": "diarization", "state": "error", "message": message})
+            self._diar_stopper = self._spawn(lambda: self._stop_quietly(d), "diarizer-stop")
         log.warning("diarizer off: %s (%s)", reason, message)
         self._write_event({"event": "diarizer_off", "reason": reason})
+
+    @staticmethod
+    def _stop_quietly(d) -> None:
+        try:
+            d.stop()
+        except Exception:
+            log.exception("stopping the diarizer failed")
 
     def _reset_diarizer(self) -> None:
         """Clear and model switches: the next voice heard becomes Speaker 0."""
@@ -848,10 +873,11 @@ class VoiceSession:
 
     # ---------- loops ----------
 
-    def _spawn(self, target: Callable[[], None], name: str) -> None:
+    def _spawn(self, target: Callable[[], None], name: str) -> threading.Thread:
         t = threading.Thread(target=target, name=name, daemon=True)
         self._threads = [x for x in self._threads if x.is_alive()] + [t]
         t.start()
+        return t
 
     def _listen_loop(self, gen: int, previous: threading.Thread | None) -> None:
         # A quick Mic off -> on can start this run while the previous one is still inside

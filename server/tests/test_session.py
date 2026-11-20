@@ -937,19 +937,28 @@ def test_words_mode_arms_mid_utterance_with_onset(make, backend, sink, events, t
 # ---------- v4: speaker diarization lifecycle (plan Task 6) ----------
 
 class FakeDiarizer:
-    """Scripted timeline. share() pops from shares (None: not covered yet) and then repeats the last value."""
+    """Scripted timeline. share() pops from shares (None: not covered yet) and then repeats the last value.
+    Like the real Diarizer, start() is a no-op while the previous run is still alive (not stopped), and
+    fire() reports at most once per start()."""
     def __init__(self, ready=True, fail_load=None):
         self.ready, self.fail_load, self.mode = ready, fail_load, "ultra_low_latency"
         self.pos = self.cov = 0; self.speaker = 0; self.shares = [1.0]; self.windows = []
         self.loads = self.resets = 0; self.started = False; self.on_error = None; self.load_gate = None
+        self.stops = 0; self.stop_delay = 0; self.reported = False
     def load(self):
         self.loads += 1
         if self.load_gate: self.load_gate.wait(2)
         if self.fail_load: raise RuntimeError(self.fail_load)
         self.ready = True
     def set_mode(self, m): self.mode = m; self.reset()
-    def start(self): self.started = True
-    def stop(self): self.started = False
+    def start(self):
+        if self.started: return          # old thread still alive: the real start() returns early
+        self.started, self.reported = True, False
+    def stop(self):
+        self.stops += 1; time.sleep(self.stop_delay); self.started = False
+    def fire(self, reason, message):     # Diarizer._report: once per start()
+        if self.reported: return
+        self.reported = True; self.on_error(reason, message)
     def feed(self, pcm): pass
     def position(self): return self.pos
     def covered(self): return self.cov
@@ -1006,7 +1015,7 @@ def test_off_while_loading_stays_off(make, diar, events, audio, sink):          
     diar.ready = False; diar.load_gate = threading.Event(); s = diar_session(make, diar)
     s.handle({"type": "update_settings", "diarization": True})
     s.handle({"type": "update_settings", "diarization": False}); diar.load_gate.set()
-    time.sleep(0.1)
+    wait_for(lambda: diar.loads == 1 and not s._diar_loading)
     assert getattr(audio, "diarizer", None) is None and s.diarization is False
     assert not any(r.get("event") == "diarizer_on" for r in sink)
 
@@ -1037,3 +1046,14 @@ def test_model_switch_resets_the_diarizer(session_with_models, diar, events):
     turn_on(s, events); base = diar.resets
     s.handle({"type": "select_model", "role": "tts", "slug": "kokoro"})
     wait_for(lambda: not s._switching.locked() and diar.resets > base)
+
+def test_reenable_after_overflow_reports_errors_again(make, diar, events, audio, sink):   # fix round 1
+    s = diar_session(make, diar); turn_on(s, events)
+    diar.stop_delay = 0.1                    # the stop spawned by the error is still running when "on" comes
+    diar.fire("overflow", "50 frames dropped")
+    turn_on(s, events)
+    time.sleep(0.2)                          # a late stop must not end the new run
+    assert s.diarization is True and audio.diarizer is diar and diar.started
+    diar.fire("overflow", "50 frames dropped")
+    assert [e["state"] for e in diar_events(events)].count("error") == 2 and s.diarization is False
+    assert [r["reason"] for r in sink if r.get("event") == "diarizer_off"] == ["overflow", "overflow"]
