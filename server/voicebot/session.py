@@ -48,6 +48,8 @@ _STRIP_PUNCT = str.maketrans("", "", string.punctuation)
 # a server that runs with diarization off.
 DIAR_MODES = ("ultra_low_latency", "very_low_latency", "low_latency")
 DIAR_UNAVAILABLE = "Speaker diarization is not available on this server (browser audio only)."
+BARGE_SHARE = 0.5      # a barge-in fires when Speaker 0 is active in at least this share of the onset's voiced frames
+BARGE_POLL_S = 0.04    # the barge-in check polls a lagging diarizer this often
 _LOG_SPANS = ("silence_wait_ms", "stt_ms", "diar_wait_ms", "retrieval_ms", "llm_ttft_ms", "filter_ms", "tts_first_audio_ms",
               "playback_ms", "perceived_ms", "total_ms")
 
@@ -146,6 +148,16 @@ class VoiceSession:
         self._last_window: tuple[int | None, int | None, int] | None = None
         self._diar_epoch = 0
         self._diar_rejects = 0       # barge-ins rejected as another speaker this turn (Task 8); _state_lock
+        # The barge-in speaker check (Task 8), all guarded by _state_lock. _barge_onset_sample is where the
+        # marked barge_onset starts on the diarizer's timeline (None: unknown, the check fails open);
+        # _barge_onset_gen counts onset marks, so a check can tell its onset was replaced by a newer one.
+        # _barge_checking: a check thread runs; _barge_recheck: the turn a confirm asked for meanwhile.
+        # _barge_words_rejected: words mode rejected this recording, so its later partials do not trigger.
+        self._barge_onset_sample: int | None = None
+        self._barge_onset_gen = 0
+        self._barge_checking = False
+        self._barge_recheck: int | None = None
+        self._barge_words_rejected = False
 
     # ---------- wiring ----------
 
@@ -634,6 +646,7 @@ class VoiceSession:
             self._diar_epoch += 1
             self._utt_start = self._utt_end = None
             self._last_window = None
+            self._barge_onset_sample = None   # a barge check on the old clock fails open
 
     def _pre_samples(self) -> int:
         """RealtimeSTT's pre-roll (the audio kept from before the VAD start) in samples at 16 kHz."""
@@ -743,9 +756,10 @@ class VoiceSession:
         after the words-mode barge-in check: the first partial that is not noise fires it."""
         with self._state_lock:
             fire = (self._barge_turn if self._barge_turn is not None and not self._barge_fired
-                    and self._barge_mode == "words" and not is_noise(text) else None)
+                    and self._barge_mode == "words" and not self._barge_words_rejected
+                    and not is_noise(text) else None)
         if fire is not None:
-            self._fire_barge(fire)
+            self._confirm_barge(fire)
         if self._turn_lock.locked():
             return
         self._emit({"type": "user_partial", "text": text})
@@ -872,13 +886,14 @@ class VoiceSession:
             pos = self._diar_position(d) if d is not None else None
             self._utt_start = max(0, pos - self._pre_samples()) if pos is not None else None
             self._utt_end = None
+            self._barge_words_rejected = False   # a new recording may be another speaker
             if self._barge_turn is None or self._barge_fired:
                 return
             turn = self._barge_turn
-            self.timer.mark("barge_onset")
+            self._mark_onset_locked(self._utt_start)
             fire = self._barge_mode == "onset" and self._start_barge_timer_locked()
         if fire:
-            self._fire_barge(turn)
+            self._confirm_barge(turn)
 
     def on_recording_stop(self) -> None:
         d = self._active_diarizer()
@@ -913,16 +928,23 @@ class VoiceSession:
     def on_speech_resume(self) -> None:
         """Recorder on_turn_detection_stop: speech resumed inside the same recording, so arm the onset
         again (RealtimeSTT fires no second on_recording_start). It also fires after a recording ends;
-        _recording is False then and nothing happens."""
+        _recording is False then and nothing happens. A running speaker check keeps its onset."""
+        d = self._active_diarizer()
         with self._state_lock:
             if (self._barge_turn is None or self._barge_fired or self._barge_mode != "onset"
-                    or not self._recording or self._barge_timer is not None):
+                    or not self._recording or self._barge_timer is not None or self._barge_checking):
                 return
             turn = self._barge_turn
-            self.timer.mark("barge_onset")
+            self._mark_onset_locked(self._diar_position(d) if d is not None else None)
             fire = self._start_barge_timer_locked()
         if fire:
-            self._fire_barge(turn)
+            self._confirm_barge(turn)
+
+    def _mark_onset_locked(self, sample: int | None) -> None:
+        """Mark barge_onset and where it starts on the diarizer's timeline (caller holds _state_lock)."""
+        self.timer.mark("barge_onset")
+        self._barge_onset_sample = sample
+        self._barge_onset_gen += 1
 
     def _start_barge_timer_locked(self) -> bool:
         """Start the onset timer (caller holds _state_lock). Returns True when it must fire at once."""
@@ -937,12 +959,96 @@ class VoiceSession:
                 if self._barge_timer is not t:   # cancelled, disarmed or replaced: a late callback
                     return
                 self._barge_timer = None
-            self._fire_barge(turn)
+            self._confirm_barge(turn)
         t = threading.Timer(self._barge_min_ms / 1000, due)
         t.daemon = True
         self._barge_timer = t
         t.start()
         return False
+
+    def _confirm_barge(self, turn_id: int | None) -> None:
+        """A barge-in trigger. Diarization off: fire at once on this thread (v3). On: only Speaker 0 may
+        interrupt, so a check runs on its own thread (never blocking RealtimeSTT's callback threads). One
+        check at a time; a trigger that comes during one is remembered and checked after it if it still
+        applies (a newer onset), else dropped."""
+        d = self._active_diarizer()
+        if d is None:
+            self._fire_barge(turn_id)
+            return
+        with self._state_lock:
+            if turn_id is None or self._barge_turn != turn_id or self._barge_fired:
+                return
+            if self._barge_checking:
+                self._barge_recheck = turn_id
+                return
+            self._barge_checking = True
+            self._barge_recheck = None
+        try:
+            self._spawn(lambda: self._barge_check(turn_id, d), "barge-check")
+        except Exception:
+            log.exception("starting the barge-in check failed; firing (fail open)")
+            with self._state_lock:
+                self._barge_checking = False
+            self._fire_barge(turn_id)
+
+    def _barge_check(self, turn_id: int, d) -> None:
+        """The check thread: decide, then fire, reject or stop. Always clears _barge_checking."""
+        try:
+            while True:
+                verdict, gen = self._barge_verdict(turn_id, d)
+                if verdict == "fire":
+                    self._fire_barge(turn_id)
+                    return
+                with self._state_lock:
+                    if verdict == "reject" and self._barge_turn == turn_id and not self._barge_fired:
+                        self._diar_rejects += 1
+                        if self._barge_onset_gen == gen:   # still the onset that was checked
+                            self.timer.unmark("barge_onset")
+                            if self._barge_mode == "words":
+                                self._barge_words_rejected = True
+                            self._barge_recheck = None     # later triggers of this onset are the same speaker
+                    nxt, self._barge_recheck = self._barge_recheck, None
+                    if nxt is None or nxt != self._barge_turn or self._barge_fired:
+                        return
+                    turn_id = nxt                          # a newer onset was triggered meanwhile: check it
+        finally:
+            with self._state_lock:
+                self._barge_checking = False
+                self._barge_recheck = None
+
+    def _barge_verdict(self, turn_id: int, d) -> tuple[str, int]:
+        """("fire" | "reject" | "stop", onset generation). Fixes the window end once, then polls every
+        BARGE_POLL_S up to diar_wait_ms while the diarizer has not covered it. Fails open: an unknown
+        onset, a timeout, a diarizer that is gone or reset, or any diarizer exception gives "fire"."""
+        with self._state_lock:
+            onset, gen = self._barge_onset_sample, self._barge_onset_gen
+            epoch, wait_ms = self._diar_epoch, self.diar_wait_ms
+        try:
+            if onset is None:
+                return "fire", gen
+            end = d.position()
+            deadline = time.monotonic() + wait_ms / 1000
+            while True:
+                with self._state_lock:
+                    if self._barge_turn != turn_id or self._barge_fired:
+                        return "stop", gen
+                # The epoch is read without a lock (an int), as in _decide_speaker.
+                if self._active_diarizer() is not d or self._diar_epoch != epoch:
+                    return "fire", gen
+                share = d.share(0, onset, end)
+                if self._diar_epoch != epoch:   # a reset raced share(): its answer may be on the new clock
+                    return "fire", gen
+                if share is not None:
+                    if share >= BARGE_SHARE:
+                        return "fire", gen
+                    log.info("barge-in on turn %d rejected: Speaker 0 share %.2f", turn_id, share)
+                    return "reject", gen
+                if time.monotonic() >= deadline:
+                    return "fire", gen
+                time.sleep(BARGE_POLL_S)
+        except Exception:
+            log.exception("barge-in speaker check failed; firing (fail open)")
+            return "fire", gen
 
     def _fire_barge(self, turn_id: int | None) -> None:
         """Fire the barge-in once per armed turn: mark barge_in, tell the browser, stop the reply."""
@@ -1018,6 +1124,10 @@ class VoiceSession:
                 text = text.strip()
                 diar = self._decide_speaker()
                 if diar is not None and diar["diar_speaker"] not in (0, "unknown"):
+                    if pending is not None:
+                        # The barge-in check passed (or failed open) but the turn check says another speaker.
+                        log.info("barge-in on turn %d fired, but its utterance was speaker %s: ignored",
+                                 pending["turn_id"], diar["diar_speaker"])
                     self._ignore_speaker(text, diar)
                     continue
                 self._run_turn(text, source="voice", diar_fields=diar)
@@ -1156,14 +1266,14 @@ class VoiceSession:
             if armed and self._recording and not self._barge_fired:
                 # The user is already mid-utterance (e.g. during a typed turn): no on_recording_start
                 # will come for it, so the onset starts now (words mode: the mark only, no timer).
-                self.timer.mark("barge_onset")
+                self._mark_onset_locked(self._utt_start)
                 if barge_mode == "onset":
                     fire_now = self._start_barge_timer_locked()
         if not armed:
             self.audio.mute_input(True)
         try:
             if fire_now:
-                self._fire_barge(turn_id)
+                self._confirm_barge(turn_id)
             dropped = drain_audio_queue(self.stream)
             if dropped:
                 log.info("dropped %d stale TTS audio chunks before turn %d", dropped, turn_id)

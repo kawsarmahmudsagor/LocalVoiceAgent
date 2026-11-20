@@ -1161,3 +1161,61 @@ def test_next_utterance_start_keeps_the_previous_window(make, diar, events, reco
     assert first_transcript(events) == {"type": "user_transcript", "text": "Not you", "turn_id": None,
                                         "speaker": 1, "ignored": True}
     assert diar.windows[0] == (12800, 16000)
+
+
+# ---------- v4 Task 8: barge-in check ----------
+
+def armed_diar(make, diar, events, mode, min_ms=0, wait_ms=600):
+    def factory(on_error): diar.on_error = on_error; return diar
+    extra = {"diarizer_factory": factory}
+    s = make(models=FakeModels(), **extra) if mode == "words" else make(**extra)
+    turn_on(s, events); s.handle({"type": "update_settings", "diar_wait_ms": wait_ms})
+    s.handle({"type": "update_settings", "barge_in_mode": mode, "barge_in_min_ms": min_ms})
+    s.handle({"type": "start_listening"}); wait_for(lambda: s.audio.recorder.waiting)
+    s.backend.gate = threading.Event()
+    s.handle({"type": "send_text", "text": "Hi"}); wait_for(lambda: "assistant_delta" in types(events))
+    return s
+
+def test_barge_speaker_zero_fires(make, diar, events, sink):
+    diar.pos = 32000; diar.shares = [0.9]
+    s = armed_diar(make, diar, events, "onset"); s.on_recording_start()
+    wait_for(lambda: "barge_in" in types(events))
+    r = wait_for(lambda: next((x for x in sink if "event" not in x), None))
+    assert r["diar_rejects"] == 0 and r["interrupted"] is True
+
+def test_barge_other_speaker_rejected_and_counted(make, diar, events, sink, backend):
+    diar.pos = 32000; diar.shares = [0.2]
+    s = armed_diar(make, diar, events, "onset"); s.on_recording_start(); time.sleep(0.2)
+    assert "barge_in" not in types(events)
+    backend.gate.set(); r = wait_for(lambda: next((x for x in sink if "event" not in x), None))
+    assert r["diar_rejects"] == 1 and r["interrupted"] is False
+
+def test_barge_waits_for_a_lagging_diarizer(make, diar, events, sink):
+    diar.pos = 32000; diar.shares = [None, None, None, 0.8]
+    s = armed_diar(make, diar, events, "onset"); s.on_recording_start()
+    wait_for(lambda: "barge_in" in types(events))
+    r = wait_for(lambda: next((x for x in sink if "event" not in x), None))
+    assert r["spans"]["barge_detect_ms"] >= 100                           # three 40 ms polls before the decision
+
+def test_barge_fails_open_when_the_diarizer_never_catches_up(make, diar, events):
+    diar.pos = 32000; diar.shares = [None]
+    s = armed_diar(make, diar, events, "onset", wait_ms=150); s.on_recording_start()
+    wait_for(lambda: "barge_in" in types(events), timeout=1.0)
+
+def test_barge_rejected_onset_rearms_on_resume(make, diar, events):
+    diar.pos = 32000; diar.shares = [0.1, 0.9]
+    s = armed_diar(make, diar, events, "onset"); s.on_recording_start(); time.sleep(0.15)
+    assert "barge_in" not in types(events)
+    s.on_speech_pause(); s.on_speech_resume(); wait_for(lambda: "barge_in" in types(events))
+
+def test_words_mode_reject_holds_until_next_recording(make, diar, events):
+    diar.pos = 32000; diar.shares = [0.1, 0.9]
+    s = armed_diar(make, diar, events, "words"); s.on_recording_start(); s.on_partial("hello there")
+    time.sleep(0.15); s.on_partial("hello there again"); time.sleep(0.1)
+    assert "barge_in" not in types(events)
+    s.on_recording_stop(); s.on_recording_start(); s.on_partial("stop please")
+    wait_for(lambda: "barge_in" in types(events))
+
+def test_barge_without_diarization_is_v3(make, events):
+    s = armed(make, "onset", 0); s.on_recording_start()
+    assert "barge_in" in types(events)                                   # same thread, no check thread
