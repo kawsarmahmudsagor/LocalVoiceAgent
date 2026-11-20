@@ -1,4 +1,5 @@
 import type { OutputFormat } from "../protocol";
+import { analyserLevel } from "./level";
 import { pcm16ToFloat, resample } from "./pcm";
 import workletUrl from "./player-worklet.ts?worker&url";
 
@@ -12,6 +13,10 @@ export interface Player {
   resetClock(): void;
   /** Call cb once playback of the current reply passes atSeconds. flush() drops pending callbacks. */
   schedule(atSeconds: number, cb: () => void): void;
+  /** Speaker off: silence the output only, so word timing and playback_started keep running. */
+  setMuted(muted: boolean): void;
+  /** The reply's current level, 0–1 (measured before the mute, so it moves while muted). */
+  level(): number;
 }
 
 /** Streams server TTS PCM (s16le at format.sample_rate) to the speakers. */
@@ -21,6 +26,12 @@ export function createPlayer(format: OutputFormat, onStarted: () => void): Playe
   const pending: (Float32Array | object)[] = [];
   const callbacks = new Map<number, () => void>();
   let nextMark = 1;
+  // worklet → analyser (level), worklet → gain (speaker mute) → speakers.
+  const gain = ctx.createGain();
+  gain.connect(ctx.destination);
+  const analyser = ctx.createAnalyser();
+  analyser.fftSize = 512;
+  const levelBuf = new Float32Array(analyser.fftSize);
 
   const post = (m: Float32Array | object) =>
     m instanceof Float32Array ? node!.port.postMessage(m, [m.buffer]) : node!.port.postMessage(m);
@@ -38,7 +49,8 @@ export function createPlayer(format: OutputFormat, onStarted: () => void): Playe
         }
       }
     };
-    node.connect(ctx.destination);
+    node.connect(gain);
+    node.connect(analyser);
     pending.splice(0).forEach(post);
   });
 
@@ -65,6 +77,12 @@ export function createPlayer(format: OutputFormat, onStarted: () => void): Playe
     },
     resume() {
       if (ctx.state === "suspended") void ctx.resume();
+    },
+    setMuted(muted) {
+      gain.gain.value = muted ? 0 : 1;
+    },
+    level() {
+      return node ? analyserLevel(analyser, levelBuf) : 0;
     },
   };
 }
