@@ -863,3 +863,72 @@ def test_server_mode_does_not_wait_for_cut(gated_session, audio, conv, events):
     t0 = time.monotonic(); gated_session.handle({"type": "stop_speaking"})
     done = wait_for(lambda: next((e for e in events if e["type"] == "assistant_done"), None))
     assert time.monotonic() - t0 < 0.5 and done["heard"] is None and conv.turns[0][1] == done["text"]
+
+
+# ---------- final review fixes ----------
+
+def test_noise_after_barge_logs_false_fire(make, recorder, sink, events):
+    # RealtimeSTT's pause callback comes too late to cancel a short onset timer, so a cough fires the
+    # barge-in; the next transcript (noise) counts it after the fact.
+    s = armed(make, "onset", 30); s.on_recording_start()
+    wait_for(lambda: "barge_in" in types(events))
+    wait_for(lambda: any("event" not in r for r in sink))                 # the barged turn's own record
+    recorder.texts.append("you")
+    ev = wait_for(lambda: next((r for r in sink if r.get("event") == "barge_false_fire"), None))
+    assert ev["turn_id"] == 1 and ev["barge_in_mode"] == "onset" and ev["barge_in_min_ms"] == 30
+    assert ev["llm_backend"] == "llamacpp" and "ts" in ev
+    recorder.texts.append("."); time.sleep(0.15)
+    assert sum(r.get("event") == "barge_false_fire" for r in sink) == 1   # counted once
+
+def test_real_words_after_barge_log_no_false_fire(make, backend, recorder, sink, events):
+    s = armed(make, "onset", 30); s.on_recording_start()
+    wait_for(lambda: "barge_in" in types(events))
+    wait_for(lambda: any("event" not in r for r in sink))
+    s.on_recording_stop(); backend.gate.set()                             # the barge utterance ends
+    recorder.texts.append("Wait a second")
+    wait_for(lambda: sum("event" not in r for r in sink) == 2)            # the barge utterance's own turn
+    recorder.texts.append("you"); time.sleep(0.15)
+    assert not any(r.get("event") == "barge_false_fire" for r in sink)
+
+@pytest.mark.parametrize("cmd", ["stop_listening", "clear"])
+def test_mic_off_and_clear_drop_pending_false_fire(make, sink, events, cmd):
+    s = armed(make, "onset", 0); s.on_recording_start()
+    wait_for(lambda: "barge_in" in types(events))
+    assert s._barge_pending is not None
+    s.handle({"type": cmd}); assert s._barge_pending is None
+
+def test_noise_during_armed_typed_turn_keeps_its_marks(make, backend, recorder, sink):
+    s = armed(make, "onset", 1000)
+    recorder.texts.append("you"); wait_for(lambda: not recorder.texts); time.sleep(0.1)
+    backend.gate.set(); r = wait_for(lambda: next((x for x in sink if "event" not in x), None))
+    assert r["marks"]["input"] == 0 and r["spans"]["llm_ttft_ms"] is not None
+
+def test_barge_cuts_before_it_tells_the_browser(make, audio, events):
+    s = armed(make, "onset", 0)
+    audio.cut = lambda: events.append({"type": "_cut"})
+    s.on_recording_start(); wait_for(lambda: "barge_in" in types(events))
+    assert types(events).index("_cut") < types(events).index("barge_in")
+
+def test_stop_disarms_barge_in(make, events):
+    s = armed(make, "onset", 30)
+    s.handle({"type": "stop_speaking"}); s.on_recording_start(); time.sleep(0.15)
+    assert "barge_in" not in types(events)
+
+def test_stop_cancels_pending_onset(make, events, sink, timer):
+    s = armed(make, "onset", 200); s.on_recording_start()
+    s.handle({"type": "stop_speaking"}); time.sleep(0.3)
+    assert "barge_in" not in types(events)
+    r = wait_for(lambda: next((x for x in sink if "event" not in x), None))
+    assert r["marks"]["barge_onset"] is None and r["barge_false_triggers"] == 0
+
+def test_words_mode_arms_mid_utterance_with_onset(make, backend, sink, events, timer):
+    s = make(models=FakeModels())
+    s.handle({"type": "update_settings", "barge_in_mode": "words"})
+    s.handle({"type": "start_listening"}); wait_for(lambda: s.audio.recorder.waiting)
+    s.on_recording_start()                                   # the user is already speaking
+    backend.gate = threading.Event()
+    s.handle({"type": "send_text", "text": "Hi"}); wait_for(lambda: "assistant_delta" in types(events))
+    assert timer.has("barge_onset")
+    s.on_recording_stop()                                    # ended without a real word
+    backend.gate.set(); r = wait_for(lambda: next((x for x in sink if "event" not in x), None))
+    assert r["barge_false_triggers"] == 1
