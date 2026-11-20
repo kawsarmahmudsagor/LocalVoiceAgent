@@ -14,8 +14,20 @@ function render(configPatch: Partial<ServerConfig>, defaultsPatch: Partial<Defau
   };
   return renderToStaticMarkup(
     <SettingsPanel config={config} settings={defaults} onChange={noop} catalog={[]} switching={null}
-      status="idle" onSelectModel={noop} wordAlign={{ state: "off" } as never} />);
+      status="idle" onSelectModel={noop} wordAlign={{ state: "off" } as never}
+      diarization={{ state: "off", message: null }} />);
 }
+
+describe("SettingsPanel diarization", () => {
+  it("shows the controls and disables them when unavailable", () => {
+    const html = render({ diarization_available: false }, { diarization: false, diar_mode: "ultra_low_latency", diar_wait_ms: 600 });
+    expect(html).toContain("Speaker diarization"); expect(html).toContain('id="diar-mode"');
+    expect(html).toContain("Max wait (ms)"); expect(html).toMatch(/<select id="diar-mode"[^>]*disabled/);
+  });
+  it("hides the controls for an older server", () => {
+    expect(render({}, {})).not.toContain("Speaker diarization");
+  });
+});
 
 describe("SettingsPanel barge-in", () => {
   it("shows the barge-in controls and disables First words without a realtime model", () => {

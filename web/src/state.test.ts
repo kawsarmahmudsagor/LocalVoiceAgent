@@ -27,6 +27,19 @@ describe("reducer", () => {
     s = srv(s, cfg);                                    // a reconnect's config doesn't hide the error
     expect(s.wordAlign.state).toBe("error");
   });
+  it("tags speakers, keeps ignored transcripts out of the turn, tracks diarization", () => {
+    let s = srv(initialState, { ...cfg, defaults: { ...cfg.defaults, diarization: true } });
+    expect(s.diarization.state).toBe("ready");
+    s = srv(s, { type: "user_transcript", text: "hi", turn_id: 4, speaker: 0 });
+    expect(s.messages[0]).toMatchObject({ text: "hi", speaker: 0 }); expect(s.turnId).toBe(4);
+    s = srv(s, { type: "user_partial", text: "not" });
+    s = srv(s, { type: "user_transcript", text: "not me", turn_id: null, speaker: 1, ignored: true });
+    expect(s.messages[1]).toMatchObject({ text: "not me", speaker: 1, ignored: true });
+    expect(s.turnId).toBe(4); expect(s.partial).toBeNull();
+    s = srv(s, { type: "diarization", state: "error", message: "oom" });
+    expect(s.diarization).toEqual({ state: "error", message: "oom" });
+    s = srv(s, cfg); expect(s.diarization.state).toBe("error");          // a reconnect keeps the error
+  });
   it("shows sentences as they are spoken, not as the LLM writes them", () => {
     let s = srv(initialState, { type: "user_transcript", text: "hi", turn_id: 3 }); expect(s.turnId).toBe(3);
     s = srv(s, { type: "assistant_delta", text: "Hel" }); s = srv(s, { type: "assistant_delta", text: "lo. Bye." });

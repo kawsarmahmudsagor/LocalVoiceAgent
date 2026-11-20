@@ -104,6 +104,8 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 
 .msg { max-width: 760px; width: 100%; align-self: center; display: flex; flex-direction: column; gap: 4px; }
 .msg-role { font-size: 12px; color: var(--muted); font-weight: 600; }
+.msg-ignored { opacity: 0.5; }
+.speaker-tag { margin-left: 6px; font-size: 11px; padding: 1px 6px; border-radius: 999px; background: var(--user); color: var(--muted); font-weight: 600; }
 .msg-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .msg-user .msg-text { background: var(--user); border-radius: var(--radius); padding: 10px 14px; }
 

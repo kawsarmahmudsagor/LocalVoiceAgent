@@ -1,7 +1,7 @@
 # Local Voice Bot v4 — Speaker Diarization
 
 - **Date:** 2026-11-20
-- **Status:** Draft, awaiting review
+- **Status:** Implemented; manual checks open
 - **Branch:** `feat/v4-diarization` (from `feat/v3-barge-In` at `6fd9312`)
 - **Builds on:** [v1 design](2026-11-18-local-voice-bot-design.md), [v2 design](2026-11-18-v2-model-switching-design.md), [v3 RAG design](2026-11-19-v3-rag-design.md) and [v3 barge-in design](2026-11-20-barge-in-design.md). v2 §2 (Linux VM, browser audio) still applies.
 

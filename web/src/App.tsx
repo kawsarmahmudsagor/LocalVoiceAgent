@@ -75,7 +75,7 @@ export default function App() {
           player.current = createPlayer(e.output_format, ackPlayback);
           playerRate.current = e.output_format.sample_rate;
         }
-        if (e.type === "user_transcript") {
+        if (e.type === "user_transcript" && !e.ignored && e.turn_id != null) {
           turnId.current = e.turn_id;
           player.current?.resetClock(); // the previous reply has finished playing before a new turn starts
           sentenceWords.current.reset();
@@ -209,7 +209,7 @@ export default function App() {
         <div className="app">
           <SettingsPanel config={state.config} settings={state.settings} onChange={onSettingsChange}
             catalog={state.catalog} switching={state.switching} status={state.status} onSelectModel={onSelectModel}
-            wordAlign={state.wordAlign} />
+            wordAlign={state.wordAlign} diarization={state.diarization} />
           <main className="main">
             <ChatTranscript messages={state.messages} partial={state.partial} />
             <div className="dock">

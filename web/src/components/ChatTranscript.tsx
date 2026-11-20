@@ -15,8 +15,13 @@ export function ChatTranscript({ messages, partial }: { messages: ChatMessage[];
         </div>
       )}
       {messages.map(m => (
-        <div key={m.id} className={`msg msg-${m.role}`}>
-          <div className="msg-role">{m.role === "user" ? "You" : "Assistant"}</div>
+        <div key={m.id} className={`msg msg-${m.role}${m.ignored ? " msg-ignored" : ""}`}>
+          <div className="msg-role">
+            {m.ignored ? `Speaker ${m.speaker === "unknown" || m.speaker === undefined ? "?" : m.speaker} (ignored)`
+              : m.role === "user" ? "You" : "Assistant"}
+            {!m.ignored && m.role === "user" && m.speaker !== undefined &&
+              <span className="speaker-tag">S{m.speaker === "unknown" ? "?" : m.speaker}</span>}
+          </div>
           <div className="msg-text">
             {m.text}
             {m.unheard && <span className="unheard">{m.unheard}</span>}

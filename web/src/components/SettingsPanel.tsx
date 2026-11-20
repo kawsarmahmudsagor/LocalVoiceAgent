@@ -1,4 +1,4 @@
-import type { BargeInMode, CatalogEntry, Defaults, Role, ServerConfig, Status, WordAlignState } from "../protocol";
+import type { BargeInMode, DiarMode, DiarState, CatalogEntry, Defaults, Role, ServerConfig, Status, WordAlignState } from "../protocol";
 import type { AppState } from "../state";
 import { vramUsed } from "../vram";
 
@@ -11,7 +11,15 @@ interface Props {
   status: Status;
   onSelectModel(role: Role, slug: string): void;
   wordAlign: AppState["wordAlign"];
+  diarization: AppState["diarization"];
 }
+
+const DIAR_NOTE: Record<DiarState, string> = {
+  off: "Answers everyone.",
+  loading: "Loading the diarization model…",
+  ready: "Answers Speaker 0 only. Clear makes the next voice Speaker 0.",
+  error: "",
+};
 
 const ALIGN_NOTE: Record<WordAlignState, string> = {
   off: "Text follows Kokoro's own word timings; other TTS models spread words evenly.",
@@ -98,7 +106,7 @@ function Slider({ label, value, min, max, step, disabled, onChange }: SliderProp
   );
 }
 
-export function SettingsPanel({ config, settings, onChange, catalog, switching, status, onSelectModel, wordAlign }: Props) {
+export function SettingsPanel({ config, settings, onChange, catalog, switching, status, onSelectModel, wordAlign, diarization }: Props) {
   const disabled = !settings;
   return (
     <aside className="sidebar">
@@ -162,6 +170,35 @@ export function SettingsPanel({ config, settings, onChange, catalog, switching, 
           <p className="hint">Speak over the bot to stop it. Use headphones for clean measurements.
             A short noise can cancel "Voice onset" only when Min speech is above about 650 ms; below that,
             the latency report counts such false fires afterwards.</p>
+        </>
+      )}
+
+      {config?.defaults.diarization !== undefined && (
+        <>
+          <div className="field">
+            <label className="check" title="Answer only the first speaker heard (Speaker 0)">
+              <input type="checkbox" checked={diarization.state === "ready" || diarization.state === "loading"}
+                disabled={disabled || !config.diarization_available || diarization.state === "loading"}
+                onChange={e => onChange({ diarization: e.target.checked })} />
+              <span>Speaker diarization</span>
+            </label>
+            {diarization.state === "error"
+              ? <p className="field-error" role="alert">{diarization.message}</p>
+              : <p className="hint">{DIAR_NOTE[diarization.state]}</p>}
+          </div>
+          <div className="field">
+            <label htmlFor="diar-mode">Diarization latency</label>
+            <select id="diar-mode" value={settings?.diar_mode ?? config.defaults.diar_mode ?? "ultra_low_latency"}
+              disabled={disabled || !config.diarization_available}
+              onChange={e => onChange({ diar_mode: e.target.value as DiarMode })}>
+              <option value="ultra_low_latency">0.32 s</option>
+              <option value="very_low_latency">0.64 s</option>
+              <option value="low_latency">1.04 s</option>
+            </select>
+          </div>
+          <Slider label="Max wait (ms)" value={settings?.diar_wait_ms ?? config.defaults.diar_wait_ms ?? 0}
+            min={0} max={2000} step={50} disabled={disabled || !config.diarization_available}
+            onChange={v => onChange({ diar_wait_ms: v })} />
         </>
       )}
 

@@ -1,8 +1,9 @@
-import type { CatalogEntry, Defaults, Metrics, RagCollection, RagDocument, RagEmbedder, RagSettings, RagSource, Role, ServerConfig, ServerEvent, Status, WordAlignState } from "./protocol";
+import type { CatalogEntry, DiarState, Defaults, Metrics, RagCollection, RagDocument, RagEmbedder, RagSettings, RagSource, Role, ServerConfig, ServerEvent, Status, WordAlignState } from "./protocol";
 
 export interface ChatMessage { id: number; role: "user" | "assistant"; text: string; streaming: boolean; interrupted: boolean; sources?: RagSource[];
   /** The part of an interrupted reply that was never heard. */
-  unheard?: string }
+  unheard?: string;
+  speaker?: number | "unknown"; ignored?: boolean }
 
 export interface AppState {
   connected: boolean;
@@ -25,6 +26,8 @@ export interface AppState {
   tab: "playground" | "prompt" | "rag";
   /** Forced word alignment, as the server last reported it. */
   wordAlign: { state: WordAlignState; message: string | null };
+  /** Speaker diarization, as the server last reported it. */
+  diarization: { state: DiarState; message: string | null };
 }
 
 export type Action =
@@ -56,6 +59,7 @@ export const initialState: AppState = {
   rag: null,
   tab: "playground",
   wordAlign: { state: "off", message: null },
+  diarization: { state: "off", message: null },
 };
 
 const CONFIG_KEY: Record<Role, "stt_final" | "stt_realtime" | "tts"> = { stt_final: "stt_final", stt_realtime: "stt_realtime", tts: "tts" };
@@ -82,22 +86,27 @@ function applyServer(state: AppState, e: ServerEvent): AppState {
       const wordAlign = state.wordAlign.state === "error" || state.wordAlign.state === "loading"
         ? state.wordAlign
         : { state: config.defaults.word_align ? "ready" as const : "off" as const, message: null };
+      const diarization = state.diarization.state === "error" || state.diarization.state === "loading"
+        ? state.diarization
+        : { state: config.defaults.diarization ? "ready" as const : "off" as const, message: null };
       // Barge-in settings always follow the server: it may have fallen back from "words" to "onset".
       const barge: Partial<Defaults> = {};
       if (config.defaults.barge_in_mode !== undefined) barge.barge_in_mode = config.defaults.barge_in_mode;
       if (config.defaults.barge_in_min_ms !== undefined) barge.barge_in_min_ms = config.defaults.barge_in_min_ms;
       const settings = state.settings ? { ...state.settings, ...barge } : { ...config.defaults };
-      return { ...state, config, wordAlign, settings };
+      return { ...state, config, wordAlign, diarization, settings };
     }
     case "status":
       return { ...state, status: e.state };
-    case "user_transcript":
-      return {
-        ...state,
-        partial: null,
-        turnId: e.turn_id,
-        messages: addMessage(state.messages, { role: "user", text: e.text, streaming: false, interrupted: false }),
-      };
+    case "user_transcript": {
+      const tag = { ...(e.speaker !== undefined ? { speaker: e.speaker } : {}), ...(e.ignored ? { ignored: true } : {}) };
+      const messages = addMessage(state.messages, { role: "user", text: e.text, streaming: false, interrupted: false, ...tag });
+      // An ignored transcript is shown but is not a turn: turnId stays.
+      if (e.ignored) return { ...state, partial: null, messages };
+      return { ...state, partial: null, turnId: e.turn_id, messages };
+    }
+    case "diarization":
+      return { ...state, diarization: { state: e.state, message: e.message ?? null } };
     case "assistant_delta":
       // The reply text appears sentence by sentence as it is spoken ("spoken"); a delta only opens the bubble.
       if (streamingAssistant(state.messages)) return state;
