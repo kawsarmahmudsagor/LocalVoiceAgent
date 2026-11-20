@@ -617,7 +617,7 @@ def test_barge_defaults_off(session):
 def test_words_mode_falls_back_when_realtime_unloaded(session_with_models, events):
     s = session_with_models
     s.handle({"type": "select_model", "role": "stt_realtime", "slug": "nemotron-rt"})
-    wait_for(lambda: any(e.get("state") == "ready" for e in events if e["type"] == "model_status"))
+    wait_for(lambda: any(e["type"] == "config" for e in events) and not s._switching.locked())
     assert s.barge_words_available()
     s.handle({"type": "update_settings", "barge_in_mode": "words"}); assert s.barge_in_mode == "words"
     events.clear()

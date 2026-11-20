@@ -291,6 +291,7 @@ class VoiceSession:
             return
         if "word_align" in cmd:
             self._set_word_align(cmd["word_align"])
+        stale = False
         with self._state_lock:
             changes = {k: cmd[k] for k in ("temperature", "top_p", "max_tokens") if k in cmd}
             if changes:
@@ -302,9 +303,14 @@ class VoiceSession:
             if "voice" in cmd and cmd["voice"] != self.voice:
                 self.voice = self._pending_voice = cmd["voice"]
             if "barge_in_mode" in cmd:
-                self.barge_in_mode = cmd["barge_in_mode"]
+                if cmd["barge_in_mode"] == "words" and not self.barge_words_available():
+                    stale = True   # realtime STT was unloaded since validation: keep the old mode
+                else:
+                    self.barge_in_mode = cmd["barge_in_mode"]
             if "barge_in_min_ms" in cmd:
                 self.barge_in_min_ms = cmd["barge_in_min_ms"]
+        if stale:
+            self._error("bad_settings", "barge_in_mode words needs a realtime STT model")
 
     # ---------- forced word alignment ----------
 
