@@ -204,7 +204,7 @@ Main modules in `server/voicebot/`:
 
 | Problem | Engineering response |
 |---|---|
-| Interrupting by voice without patching RealtimeSTT | The library already keeps listening and queues recordings (§2.3), so the mic simply stays unmuted during an armed turn. With mode `off`, the v1 behaviour is unchanged |
+| Interrupting by voice without patching RealtimeSTT | The library already keeps listening and queues recordings (§2.4), so the mic simply stays unmuted during an armed turn. With mode `off`, the v1 behaviour is unchanged |
 | A fast trigger vs a robust one | Two runtime modes: `onset` (voice onset plus a minimum speech time) and `words` (first non-noise realtime partial). Both are measured |
 | A short noise can fire an `onset` barge-in, because RealtimeSTT cannot report the end of a short sound below ~650 ms | Kept the fast trigger. A fired barge-in whose transcript turns out to be noise is written as a `barge_false_fire` event, so the false-fire rate is measured |
 | After an interrupt, history should hold only what the user heard | The browser reveals each word as its audio plays. After a cut, it reports the revealed text (`playback_cut`); the server stores that as the reply. No acknowledgement means the full reply is kept |
