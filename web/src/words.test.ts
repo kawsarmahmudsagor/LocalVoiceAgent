@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { SentenceWords, wordSchedule } from "./words";
+import { HeardText, SentenceWords, wordSchedule } from "./words";
 
 describe("wordSchedule", () => {
   it("uses the engine's word times when there is one per word", () => {
@@ -43,4 +43,11 @@ describe("SentenceWords", () => {
     f.segment({ turn_id: 1, text: "Old.", at_s: 0 }); f.reset();
     expect(f.words({ turn_id: 1, word_s: null, end_s: 1 })).toEqual([]);
   });
+});
+
+it("HeardText collects the revealed words of the current turn", () => {
+  const h = new HeardText(); h.reset(2);
+  h.add(2, "Hello"); h.add(1, "stale"); h.add(2, "there.");
+  expect(h.text(2)).toBe("Hello there."); expect(h.text(1)).toBe("");
+  h.reset(3); expect(h.text(3)).toBe("");
 });

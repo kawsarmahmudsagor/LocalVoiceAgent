@@ -45,3 +45,23 @@ export class SentenceWords {
     this.waiting = null;
   }
 }
+
+/** The words of the current turn's reply that have been revealed (heard) so far. */
+export class HeardText {
+  private turn: number | null = null;
+  private words: string[] = [];
+
+  reset(turnId: number): void {
+    this.turn = turnId;
+    this.words = [];
+  }
+
+  add(turnId: number, word: string): void {
+    if (turnId !== this.turn) return;
+    this.words.push(word);
+  }
+
+  text(turnId: number): string {
+    return turnId === this.turn ? this.words.join(" ").trim() : "";
+  }
+}

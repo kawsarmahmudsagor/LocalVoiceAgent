@@ -28,19 +28,19 @@ describe("reducer", () => {
     s = reducer(s, { kind: "spoken", turn_id: 2, text: "Stale." });   // an older turn's sentence
     expect(s.messages[1].text).toBe("Hello.");
     s = reducer(s, { kind: "spoken", turn_id: 3, text: "Bye." }); expect(s.messages[1].text).toBe("Hello. Bye.");
-    s = srv(s, { type: "assistant_done", text: "Hello. Bye.", interrupted: false });
+    s = srv(s, { type: "assistant_done", text: "Hello. Bye.", interrupted: false, heard: null });
     expect(s.messages[1]).toMatchObject({ text: "Hello. Bye.", streaming: false, interrupted: false });
     expect(reducer(s, { kind: "spoken", turn_id: 3, text: "Late." }).messages[1].text).toBe("Hello. Bye.");
   });
   it("an interrupted reply keeps only what was heard", () => {
     let s = srv(initialState, { type: "user_transcript", text: "hi", turn_id: 1 });
     s = srv(s, { type: "assistant_delta", text: "One. Two." }); s = reducer(s, { kind: "spoken", turn_id: 1, text: "One." });
-    s = srv(s, { type: "assistant_done", text: "One. Two.", interrupted: true });
+    s = srv(s, { type: "assistant_done", text: "One. Two.", interrupted: true, heard: null });
     expect(s.messages[1]).toMatchObject({ text: "One.", streaming: false, interrupted: true });
   });
   it("assistant_done without deltas adds a message if text non-empty", () => {
-    expect(srv(initialState, { type: "assistant_done", text: "Sorry.", interrupted: false }).messages).toHaveLength(1);
-    expect(srv(initialState, { type: "assistant_done", text: "", interrupted: false }).messages).toHaveLength(0);
+    expect(srv(initialState, { type: "assistant_done", text: "Sorry.", interrupted: false, heard: null }).messages).toHaveLength(1);
+    expect(srv(initialState, { type: "assistant_done", text: "", interrupted: false, heard: null }).messages).toHaveLength(0);
   });
   it("status, metrics, error, clear, dismiss", () => {
     let s = srv(initialState, { type: "status", state: "thinking" }); expect(s.status).toBe("thinking");
@@ -85,5 +85,15 @@ describe("reducer", () => {
   it("tab action switches tabs", () => {
     expect(initialState.tab).toBe("playground");
     expect(reducer(initialState, { kind: "tab", tab: "rag" }).tab).toBe("rag");
+  });
+  it("an interrupted reply keeps the unheard tail separately", () => {
+    let s = srv(initialState, { type: "user_transcript", text: "hi", turn_id: 1 });
+    s = srv(s, { type: "assistant_delta", text: "One." });
+    s = reducer(s, { kind: "spoken", turn_id: 1, text: "One." });
+    s = srv(s, { type: "assistant_done", text: "One. Two three.", interrupted: true, heard: "One." });
+    expect(s.messages[1]).toMatchObject({ text: "One.", unheard: "Two three.", interrupted: true });
+  });
+  it("barge_in leaves state unchanged", () => {
+    expect(srv(initialState, { type: "barge_in", turn_id: 1 })).toBe(initialState);
   });
 });

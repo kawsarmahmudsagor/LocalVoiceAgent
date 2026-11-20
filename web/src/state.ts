@@ -1,6 +1,8 @@
 import type { CatalogEntry, Defaults, Metrics, RagCollection, RagDocument, RagEmbedder, RagSettings, RagSource, Role, ServerConfig, ServerEvent, Status, WordAlignState } from "./protocol";
 
-export interface ChatMessage { id: number; role: "user" | "assistant"; text: string; streaming: boolean; interrupted: boolean; sources?: RagSource[] }
+export interface ChatMessage { id: number; role: "user" | "assistant"; text: string; streaming: boolean; interrupted: boolean; sources?: RagSource[];
+  /** The part of an interrupted reply that was never heard. */
+  unheard?: string }
 
 export interface AppState {
   connected: boolean;
@@ -99,13 +101,19 @@ function applyServer(state: AppState, e: ServerEvent): AppState {
       return { ...state, wordAlign: { state: e.state, message: e.message ?? null } };
     case "assistant_segment":
     case "assistant_words":
+    case "barge_in":
       return state; // App schedules the words on the player and dispatches "spoken" as each one sounds
     case "assistant_done": {
       const cur = streamingAssistant(state.messages);
       if (cur) {
         // Interrupted: keep only the sentences that were heard.
         const text = e.interrupted ? cur.text : e.text || cur.text;
-        const done = { ...cur, text, streaming: false, interrupted: e.interrupted };
+        const done: ChatMessage = { ...cur, text, streaming: false, interrupted: e.interrupted };
+        if (e.interrupted) {
+          const n = text.split(/\s+/).filter(Boolean).length;
+          const unheard = e.text.split(/\s+/).filter(Boolean).slice(n).join(" ");
+          if (unheard) done.unheard = unheard;
+        }
         return { ...state, messages: state.messages.map(m => (m === cur ? done : m)) };
       }
       if (!e.text) return state;
