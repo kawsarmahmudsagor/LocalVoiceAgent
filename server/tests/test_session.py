@@ -1182,6 +1182,7 @@ def test_barge_speaker_zero_fires(make, diar, events, sink):
     wait_for(lambda: "barge_in" in types(events))
     r = wait_for(lambda: next((x for x in sink if "event" not in x), None))
     assert r["diar_rejects"] == 0 and r["interrupted"] is True
+    assert diar.windows[-1] == (32000 - 3200, 32000)
 
 def test_barge_other_speaker_rejected_and_counted(make, diar, events, sink, backend):
     diar.pos = 32000; diar.shares = [0.2]
@@ -1207,6 +1208,8 @@ def test_barge_rejected_onset_rearms_on_resume(make, diar, events):
     s = armed_diar(make, diar, events, "onset"); s.on_recording_start(); time.sleep(0.15)
     assert "barge_in" not in types(events)
     s.on_speech_pause(); s.on_speech_resume(); wait_for(lambda: "barge_in" in types(events))
+    assert diar.windows[0] == (32000 - 3200, 32000)                       # the recording's onset, pre-roll included
+    assert diar.windows[-1] == (32000 - 3200, 32000)                      # the resume onset too: never an empty window
 
 def test_words_mode_reject_holds_until_next_recording(make, diar, events):
     diar.pos = 32000; diar.shares = [0.1, 0.9]
@@ -1219,3 +1222,11 @@ def test_words_mode_reject_holds_until_next_recording(make, diar, events):
 def test_barge_without_diarization_is_v3(make, events):
     s = armed(make, "onset", 0); s.on_recording_start()
     assert "barge_in" in types(events)                                   # same thread, no check thread
+
+def test_new_recording_during_a_reject_check_is_checked_after_it(make, diar, events, sink):   # fix round 1
+    diar.pos = 32000; diar.shares = [None, None, 0.1, 0.9]                # the first check rejects after ~80 ms
+    s = armed_diar(make, diar, events, "onset"); s.on_recording_start(); time.sleep(0.01)
+    s.on_recording_stop(); s.on_recording_start()                         # a new onset while it still runs
+    wait_for(lambda: "barge_in" in types(events))
+    r = wait_for(lambda: next((x for x in sink if "event" not in x), None))
+    assert r["diar_rejects"] == 1 and r["interrupted"] is True

@@ -935,7 +935,10 @@ class VoiceSession:
                     or not self._recording or self._barge_timer is not None or self._barge_checking):
                 return
             turn = self._barge_turn
-            self._mark_onset_locked(self._diar_position(d) if d is not None else None)
+            # Like on_recording_start: VAD reports the resume late, so the onset reaches back by the pre-roll
+            # (an onset at position() would leave the check an empty window, which never decides).
+            pos = self._diar_position(d) if d is not None else None
+            self._mark_onset_locked(max(0, pos - self._pre_samples()) if pos is not None else None)
             fire = self._start_barge_timer_locked()
         if fire:
             self._confirm_barge(turn)
