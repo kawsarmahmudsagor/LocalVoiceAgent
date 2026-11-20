@@ -17,7 +17,8 @@ def test_voice_turn_spans():
     assert r["marks"]["speech_end"] == 0 and r["marks"]["endpoint"] == 600 and r["marks"]["input"] is None
     assert r["spans"] == {"silence_wait_ms": 600, "stt_ms": 200, "retrieval_ms": None, "llm_ttft_ms": 300, "filter_ms": 20,
                           "tts_first_audio_ms": 180, "playback_ms": 40, "perceived_ms": 1340,
-                          "llm_total_ms": 1100, "total_ms": 4000}
+                          "llm_total_ms": 1100, "total_ms": 4000,
+                          "barge_detect_ms": None, "barge_cut_ms": None}
 
 def test_typed_turn_uses_input_origin_and_null_spans():
     c = Clock(); tm = TurnTimer(clock=c)
@@ -92,3 +93,31 @@ def test_llm_total_starts_at_retrieval_done():
         at(tm, c, st, t)
     sp = tm.report()["spans"]
     assert (sp["retrieval_ms"], sp["llm_ttft_ms"], sp["llm_total_ms"]) == (300, 300, 2000)
+
+
+def test_barge_spans():
+    c = Clock(); tm = TurnTimer(clock=c)
+    at(tm, c, "input", 0.0); at(tm, c, "barge_onset", 1.0)
+    at(tm, c, "barge_in", 1.2); at(tm, c, "playback_cut", 1.35)
+    s = tm.report()["spans"]
+    assert s["barge_detect_ms"] == 200 and s["barge_cut_ms"] == 350
+
+
+def test_barge_spans_none_without_onset():
+    c = Clock(); tm = TurnTimer(clock=c)
+    tm.mark("input"); tm.mark("playback_cut")
+    s = tm.report()["spans"]
+    assert s["barge_detect_ms"] is None and s["barge_cut_ms"] is None
+
+
+def test_hold_keeps_input_marks_for_next_turn():
+    c = Clock(); tm = TurnTimer(clock=c)
+    at(tm, c, "input", 0.0)
+    tm.hold()
+    at(tm, c, "speech_end", 0.5)
+    assert tm.has("speech_end") and tm.report()["marks"]["speech_end"] is None   # pending, not in this turn
+    tm.unmark("speech_end"); assert not tm.has("speech_end")
+    at(tm, c, "speech_end", 0.6); tm.mark("endpoint")
+    tm.reset()
+    assert tm.get("speech_end") == 0.6 and tm.get("endpoint") == 0.6 and not tm.has("input")
+    tm.reset(); assert not tm.has("speech_end")          # the hold ended with the first reset

@@ -29,12 +29,20 @@ STAGES: tuple[str, ...] = (
     "playback_started",  # browser player started output (server mode: = tts_first_audio)
     "llm_done",          # backend stream ended
     "play_done",         # audio.play() returned
+    "barge_onset",       # user speech detected while the bot was speaking
+    "barge_in",          # barge-in confirmed
+    "playback_cut",      # bot audio stopped
 )
 
 SPANS: tuple[str, ...] = (
     "silence_wait_ms", "stt_ms", "retrieval_ms", "llm_ttft_ms", "filter_ms", "tts_first_audio_ms",
     "playback_ms", "perceived_ms", "llm_total_ms", "total_ms",
 )
+
+BARGE_SPANS: tuple[str, ...] = ("barge_detect_ms", "barge_cut_ms")
+
+# Marks made by the STT of the *next* utterance; routed to a pending dict while held.
+INPUT_STAGES: tuple[str, ...] = ("speech_end", "endpoint", "stt_start")
 
 _ORIGIN_STAGES = ("speech_end", "endpoint", "stt_done", "input")
 
@@ -48,6 +56,11 @@ class TurnTimer:
         self._clock = clock
         self._lock = threading.Lock()
         self._marks: dict[str, float] = {}
+        self._pending: dict[str, float] = {}
+        self._held = False
+
+    def _dict(self, stage: str) -> dict[str, float]:
+        return self._pending if self._held and stage in INPUT_STAGES else self._marks
 
     @staticmethod
     def _check(stage: str) -> None:
@@ -59,17 +72,17 @@ class TurnTimer:
         self._check(stage)
         now = self._clock()
         with self._lock:
-            self._marks.setdefault(stage, now)
+            self._dict(stage).setdefault(stage, now)
 
     def unmark(self, stage: str) -> None:
         self._check(stage)
         with self._lock:
-            self._marks.pop(stage, None)
+            self._dict(stage).pop(stage, None)
 
     def get(self, stage: str) -> float | None:
         self._check(stage)
         with self._lock:
-            return self._marks.get(stage)
+            return self._dict(stage).get(stage)
 
     def has(self, stage: str) -> bool:
         return self.get(stage) is not None
@@ -78,9 +91,18 @@ class TurnTimer:
         """The timer's clock, for waiting relative to recorded marks."""
         return self._clock()
 
+    def hold(self) -> None:
+        """Route INPUT_STAGES marks to a pending dict until the next reset()."""
+        with self._lock:
+            self._held = True
+
     def reset(self) -> None:
         with self._lock:
             self._marks.clear()
+            if self._held:
+                self._marks.update(self._pending)
+                self._pending.clear()
+                self._held = False
 
     def report(self) -> dict:
         with self._lock:
@@ -88,7 +110,7 @@ class TurnTimer:
         g = m.get
         origin = next((m[s] for s in _ORIGIN_STAGES if s in m), None)
         if origin is None:
-            return {"marks": {s: None for s in STAGES}, "spans": {s: None for s in SPANS}}
+            return {"marks": {s: None for s in STAGES}, "spans": {s: None for s in SPANS + BARGE_SPANS}}
         inp = g("input") if "input" in m else g("stt_done")
         llm_start = g("retrieval_done") if "retrieval_done" in m else inp  # LLM spans are the LLM's own time
         heard = g("playback_started") if "playback_started" in m else g("tts_first_audio")
@@ -103,6 +125,8 @@ class TurnTimer:
             "perceived_ms": _ms(origin, heard),
             "llm_total_ms": _ms(llm_start, g("llm_done")),
             "total_ms": _ms(origin, g("play_done")),
+            "barge_detect_ms": _ms(g("barge_onset"), g("barge_in")),
+            "barge_cut_ms": _ms(g("barge_onset"), g("playback_cut")),
         }
         return {"marks": {s: _ms(origin, g(s)) for s in STAGES}, "spans": spans}
 
