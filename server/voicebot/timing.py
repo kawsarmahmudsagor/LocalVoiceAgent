@@ -158,9 +158,15 @@ def fmt_ms(ms: int | None) -> str:
 
 
 def format_turn(record: dict) -> str:
-    """Render one turn record as a readable text block, times in seconds and ms."""
+    """Render one turn record as a readable text block, times in seconds and ms. An event record
+    (with an "event" key, e.g. barge_false_fire) is one line."""
     ts = str(record.get("ts", ""))
     ts = ts.replace("T", " ").replace("+00:00", " UTC") if ts else "-"
+    if "event" in record:
+        head = [str(record["event"]), f"turn {record.get('turn_id', '?')}"]
+        if record.get("barge_in_mode") is not None:
+            head.append(f"{record['barge_in_mode']} {record.get('barge_in_min_ms', '?')} ms")
+        return f"=== {' | '.join(head)} | {ts} ===\n\n"
     head = [f"Turn {record.get('turn_id', '?')}", str(record.get("source", "?"))]
     if record.get("interrupted"):
         head.append("interrupted")

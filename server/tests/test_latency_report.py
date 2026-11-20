@@ -37,3 +37,27 @@ def test_summarize_barge_groups_interrupted_turns():
     assert g["silent"]["armed"] == 1 and g["silent"]["n"] == 0 and g["silent"]["false_triggers"] == 0
     assert g["silent"]["spans"] == {"barge_detect_ms": None, "barge_cut_ms": None}
     assert len(rows) == 3
+
+
+FALSE_FIRE = {"event": "barge_false_fire", "ts": "2026-11-20T10:00:00.000+00:00", "turn_id": 3,
+              "barge_in_mode": "onset", "barge_in_min_ms": 200, "llm_backend": "llamacpp"}
+
+def test_summarize_skips_event_records():
+    rows = summarize([rec("llamacpp", 1000, 3000), FALSE_FIRE], group_by=("llm_backend",))
+    assert len(rows) == 1 and rows[0]["n"] == 1
+
+def test_summarize_barge_counts_false_fires():
+    from voicebot.latency_report import summarize_barge
+    armed = {"interrupted": True, "barge_in_mode": "onset", "barge_false_triggers": 0,
+             "spans": {"barge_detect_ms": 200, "barge_cut_ms": 260}}
+    rows = summarize_barge([armed, FALSE_FIRE, FALSE_FIRE, {**FALSE_FIRE, "barge_in_mode": "words"}],
+                           group_by=("barge_in_mode",))
+    g = {row["group"]["barge_in_mode"]: row for row in rows}
+    assert g["onset"]["armed"] == 1 and g["onset"]["n"] == 1 and g["onset"]["false_fires"] == 2
+    assert g["words"] == {"group": {"barge_in_mode": "words"}, "armed": 0, "n": 0, "false_triggers": 0,
+                          "false_fires": 1, "spans": {"barge_detect_ms": None, "barge_cut_ms": None}}
+
+def test_main_prints_false_fires(tmp_path, capsys):
+    p = tmp_path / "t.jsonl"; p.write_text(json.dumps(FALSE_FIRE) + "\n")
+    main([str(p), "--by", "barge_in_mode"]); out = capsys.readouterr().out
+    assert "false_fires=1" in out

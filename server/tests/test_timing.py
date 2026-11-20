@@ -131,3 +131,12 @@ def test_format_turn_shows_barge_lines_only_when_present():
                        "spans": {"barge_detect_ms": 200, "barge_cut_ms": 260}})
     assert 'reply heard: "One."' in out
     assert "barge_detect" in out and "0.260 s (260 ms)" in out and "barge_in_mode=onset" in out
+
+
+def test_event_record_is_one_line(tmp_path):
+    from voicebot.timing import append_turn_text, format_turn
+    ev = {"event": "barge_false_fire", "ts": "2026-11-20T10:00:00.000+00:00", "turn_id": 3,
+          "barge_in_mode": "onset", "barge_in_min_ms": 200, "llm_backend": "llamacpp"}
+    assert format_turn(ev) == "=== barge_false_fire | turn 3 | onset 200 ms | 2026-11-20 10:00:00.000 UTC ===\n\n"
+    p = tmp_path / "turns.log"; append_turn_text(p, ev)
+    assert p.read_text().count("\n") == 2 and "Turn" not in p.read_text()

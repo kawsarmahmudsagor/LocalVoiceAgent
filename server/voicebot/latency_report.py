@@ -31,7 +31,7 @@ def _stat(recs: list[dict], span: str) -> dict | None:
 def summarize(records: list[dict], group_by: tuple[str, ...]) -> list[dict]:
     groups: dict[tuple, list[dict]] = {}
     for r in records:
-        if r.get("interrupted"):
+        if r.get("interrupted") or "event" in r:   # event records (barge_false_fire) are not turns
             continue
         key = tuple(r.get(k) for k in group_by)
         groups.setdefault(key, []).append(r)
@@ -44,16 +44,23 @@ def summarize(records: list[dict], group_by: tuple[str, ...]) -> list[dict]:
 
 def summarize_barge(records: list[dict], group_by: tuple[str, ...]) -> list[dict]:
     """Per group of armed turns (barge_in_mode set and not "off"): armed count, false triggers over
-    all armed turns, and spans over interrupted turns with a barge onset (Stop-button cuts have none)."""
+    all armed turns, and spans over interrupted turns with a barge onset (Stop-button cuts have none).
+    false_fires counts barge_false_fire events: barge-ins whose utterance transcribed as noise."""
     groups: dict[tuple, list[dict]] = {}
+    fires: dict[tuple, int] = {}
     for r in records:
-        if r.get("barge_in_mode") not in (None, "off"):
-            groups.setdefault(tuple(r.get(k) for k in group_by), []).append(r)
+        key = tuple(r.get(k) for k in group_by)
+        if r.get("event") == "barge_false_fire":
+            fires[key] = fires.get(key, 0) + 1
+            groups.setdefault(key, [])
+        elif "event" not in r and r.get("barge_in_mode") not in (None, "off"):
+            groups.setdefault(key, []).append(r)
     rows = []
     for key, recs in groups.items():
         cut = [r for r in recs if r.get("interrupted") and (r.get("spans") or {}).get("barge_detect_ms") is not None]
         rows.append({"group": dict(zip(group_by, key)), "armed": len(recs), "n": len(cut),
                      "false_triggers": sum(r.get("barge_false_triggers") or 0 for r in recs),
+                     "false_fires": fires.get(key, 0),
                      "spans": {span: _stat(cut, span) for span in BARGE_SPANS}})
     return rows
 
@@ -83,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     records = _load(args.path)
     if args.source != "all":
-        records = [r for r in records if r.get("source") == args.source]
+        records = [r for r in records if r.get("source") == args.source or "event" in r]   # events have no source
     if args.last:
         records = records[-args.last:]
     group_by = tuple(k.strip() for k in args.by.split(",") if k.strip())
@@ -102,7 +109,8 @@ def main(argv: list[str] | None = None) -> int:
         print("barge-in")
         for row in barge:
             title = "  ".join(f"{k}={v}" for k, v in row["group"].items())
-            print(f"{title}  (armed={row['armed']}, n={row['n']}, false_triggers={row['false_triggers']})")
+            print(f"{title}  (armed={row['armed']}, n={row['n']}, false_triggers={row['false_triggers']}, "
+                  f"false_fires={row['false_fires']})")
             print(f"  {'span':<20}{'median':>8}{'p90':>8}")
             for span in BARGE_SPANS:
                 s = row["spans"][span]
