@@ -2,11 +2,11 @@
 
 /* The call page only: Tailwind (and its preflight) never loads on the playground at `/`. */
 @theme {
-  --color-stage: #0b0d10;
-  --color-panel: #12151a;
+  --color-stage: #0f1420; /* deep ink blue */
+  --color-panel: #161d2b;
   --color-line: rgb(255 255 255 / 0.09);
-  --color-ink: #eef1f4;
-  --color-ink-muted: #8b95a1;
+  --color-ink: #e8ecf3;
+  --color-ink-muted: #8994a8;
   --color-agent: #d9a85b; /* the agent's voice: warm brass */
   --color-user: #3fc9a4; /* the caller's voice: mint */
   --color-danger: #e5484d;
