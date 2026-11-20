@@ -151,10 +151,15 @@ class BrowserAudio:
         self._generation = 0  # bumped by cut(); chunks from an older play() are dropped
         # voicebot.aligner.WordAligner, or None: word times for engines without native ones (Piper, Qwen, ...).
         self.word_aligner = None
+        # voicebot.diarizer.Diarizer or None: gets every unmuted mic frame (v4 spec).
+        self.diarizer = None
 
     def on_client_audio(self, data: bytes) -> None:
+        d = self.diarizer
         if not self._muted:
             self.recorder.feed_audio(data, original_sample_rate=STT_SAMPLE_RATE)
+            if d is not None:
+                d.feed(data)
 
     def mute_input(self, muted: bool) -> None:
         self._muted = muted

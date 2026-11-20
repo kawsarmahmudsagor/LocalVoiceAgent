@@ -342,3 +342,14 @@ def test_server_audio_reports_sentences_without_offset():
     s, seen = QueuedStream([("One.", 4800)]), []
     ServerAudio(Rec()).play(s, lambda: None, on_sentence=lambda t, at: seen.append((t, at)))
     assert seen == [("One.", None)]
+
+def test_browser_audio_taps_the_diarizer_only_when_attached_and_unmuted():
+    class D:
+        def __init__(self): self.fed = []
+        def feed(self, b): self.fed.append(b)
+    r, d = Rec(), D()
+    a = BrowserAudio(r, {"sample_rate": 24000})
+    a.on_client_audio(b"\x01\x02"); assert a.diarizer is None
+    a.diarizer = d; a.on_client_audio(b"\x03\x04")
+    a.mute_input(True); a.on_client_audio(b"\x05\x06")
+    assert d.fed == [b"\x03\x04"] and len(r.fed) == 2
