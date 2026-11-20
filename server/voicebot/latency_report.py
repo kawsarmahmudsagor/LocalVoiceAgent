@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 from voicebot.config import REPO_ROOT
-from voicebot.timing import SPANS
+from voicebot.timing import BARGE_SPANS, SPANS
 
 DEFAULT_PATH = REPO_ROOT / "logs" / "turns.jsonl"
 DEFAULT_BY = ("llm_backend", "audio_io", "stt_model")
@@ -38,6 +38,24 @@ def summarize(records: list[dict], group_by: tuple[str, ...]) -> list[dict]:
             vals = [v for v in vals if v is not None]
             spans[span] = {"median": round(statistics.median(vals)), "p90": _p90(vals)} if vals else None
         rows.append({"group": dict(zip(group_by, key)), "n": len(recs), "spans": spans})
+    return rows
+
+
+def summarize_barge(records: list[dict], group_by: tuple[str, ...]) -> list[dict]:
+    """Interrupted turns that have a barge onset (Stop-button cuts have none), per group."""
+    groups: dict[tuple, list[dict]] = {}
+    for r in records:
+        if r.get("interrupted") and (r.get("spans") or {}).get("barge_detect_ms") is not None:
+            groups.setdefault(tuple(r.get(k) for k in group_by), []).append(r)
+    rows = []
+    for key, recs in groups.items():
+        spans: dict[str, dict | None] = {}
+        for span in BARGE_SPANS:
+            vals = [v for v in ((r.get("spans") or {}).get(span) for r in recs) if v is not None]
+            spans[span] = {"median": round(statistics.median(vals)), "p90": _p90(vals)} if vals else None
+        rows.append({"group": dict(zip(group_by, key)), "n": len(recs),
+                     "false_triggers": sum(r.get("barge_false_triggers") or 0 for r in recs),
+                     "spans": spans})
     return rows
 
 
@@ -80,6 +98,18 @@ def main(argv: list[str] | None = None) -> int:
             med, p90 = (s["median"], s["p90"]) if s else ("-", "-")
             print(f"  {span:<20}{med:>8}{p90:>8}")
         print()
+    barge = summarize_barge(records, group_by)
+    if barge:
+        print("barge-in")
+        for row in barge:
+            title = "  ".join(f"{k}={v}" for k, v in row["group"].items())
+            print(f"{title}  (n={row['n']}, false_triggers={row['false_triggers']})")
+            print(f"  {'span':<20}{'median':>8}{'p90':>8}")
+            for span in BARGE_SPANS:
+                s = row["spans"][span]
+                med, p90 = (s["median"], s["p90"]) if s else ("-", "-")
+                print(f"  {span:<20}{med:>8}{p90:>8}")
+            print()
     return 0
 
 

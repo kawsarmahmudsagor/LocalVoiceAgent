@@ -121,3 +121,13 @@ def test_hold_keeps_input_marks_for_next_turn():
     tm.reset()
     assert tm.get("speech_end") == 0.6 and tm.get("endpoint") == 0.6 and not tm.has("input")
     tm.reset(); assert not tm.has("speech_end")          # the hold ended with the first reset
+
+
+def test_format_turn_shows_barge_lines_only_when_present():
+    from voicebot.timing import format_turn
+    base = {"turn_id": 1, "source": "voice", "spans": {}}
+    assert "barge_detect" not in format_turn(base)
+    out = format_turn({**base, "interrupted": True, "heard": "One.", "barge_in_mode": "onset",
+                       "spans": {"barge_detect_ms": 200, "barge_cut_ms": 260}})
+    assert 'reply heard: "One."' in out
+    assert "barge_detect" in out and "0.260 s (260 ms)" in out and "barge_in_mode=onset" in out

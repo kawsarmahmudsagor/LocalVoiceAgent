@@ -148,7 +148,8 @@ _CONTEXT_KEYS = ("llm_backend", "model_label", "audio_io", "stt_model", "stt_dev
                  "kokoro_trim_silence", "kokoro_extra_end_ms", "tts_first_fragment_words",
                  "tts_fast_sentence_fragment", "tts_sentence_silence_ms", "kokoro_speed",
                  "rag_enabled", "rag_embedder", "rag_top_k", "rag_min_score", "rag_max_context_chars",
-                 "rag_chunk_size", "rag_chunk_overlap", "rag_chunks_used", "rag_context_chars", "rag_error")
+                 "rag_chunk_size", "rag_chunk_overlap", "rag_chunks_used", "rag_context_chars", "rag_error",
+                 "barge_in_mode", "barge_in_min_ms", "barge_false_triggers")
 
 
 def fmt_ms(ms: int | None) -> str:
@@ -173,9 +174,14 @@ def format_turn(record: dict) -> str:
     for label, key in (("heard", "transcript"), ("reply", "reply")):
         if record.get(key) is not None:
             lines.append(f'  {label}: "{record[key]}"')
+    if record.get("heard") is not None:
+        lines.append(f'  reply heard: "{record["heard"]}"')
     spans = record.get("spans") or {}
     for span in SPANS:
         lines.append(f"  {span.removesuffix('_ms'):<18}{fmt_ms(spans.get(span))}")
+    if any(spans.get(span) is not None for span in BARGE_SPANS):
+        for span in BARGE_SPANS:
+            lines.append(f"  {span.removesuffix('_ms'):<18}{fmt_ms(spans.get(span))}")
     return "\n".join(lines) + "\n\n"
 
 
