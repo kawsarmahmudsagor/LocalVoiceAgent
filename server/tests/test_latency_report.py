@@ -61,3 +61,14 @@ def test_main_prints_false_fires(tmp_path, capsys):
     p = tmp_path / "t.jsonl"; p.write_text(json.dumps(FALSE_FIRE) + "\n")
     main([str(p), "--by", "barge_in_mode"]); out = capsys.readouterr().out
     assert "false_fires=1" in out
+
+
+def test_diar_events_are_not_turns_and_diar_wait_is_reported(tmp_path, capsys):
+    from voicebot.latency_report import summarize_barge
+    turn = {**rec("llamacpp", 1000, 3000), "diarization": True, "diar_mode": "ultra_low_latency"}
+    turn["spans"]["diar_wait_ms"] = 350
+    events = [{"event": "diarizer_on", "diar_mode": "ultra_low_latency", "load_ms": 1},
+              {"event": "diar_ignored", "speaker": 1, "text": "x"}, {"event": "diarizer_off", "reason": "user"}]
+    rows = summarize([turn, *events], ("diarization", "diar_mode"))
+    assert len(rows) == 1 and rows[0]["n"] == 1 and rows[0]["spans"]["diar_wait_ms"] == {"median": 350, "p90": 350}
+    assert summarize_barge(events, ("diarization",)) == []

@@ -20,7 +20,7 @@ export interface RagCollection { embedder: string; dim: number | null; state: "i
   chunk_size: number; chunk_overlap: number }
 export interface RagDocument { doc_id: string; name: string; ext: string; size: number; state: string; chunks: number }
 export interface RagSource { name: string; chunk: number; score: number; preview: string }
-export const SPANS = ["silence_wait_ms", "stt_ms", "retrieval_ms", "llm_ttft_ms", "filter_ms", "tts_first_audio_ms",
+export const SPANS = ["silence_wait_ms", "stt_ms", "diar_wait_ms", "retrieval_ms", "llm_ttft_ms", "filter_ms", "tts_first_audio_ms",
   "playback_ms", "perceived_ms", "llm_total_ms", "total_ms"] as const;
 export type SpanName = (typeof SPANS)[number];
 export interface Metrics { turn_id: number; source: "voice" | "text"; interrupted: boolean;

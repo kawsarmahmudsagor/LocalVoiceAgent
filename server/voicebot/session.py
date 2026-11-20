@@ -43,7 +43,7 @@ APOLOGY = "Sorry, something went wrong."
 PLAYBACK_MARGIN_S = 0.25  # browser playback slack after the estimated end of the audio
 SOURCE_PREVIEW_CHARS = 160  # spec §3.2: the Sources line shows the first 160 characters of each chunk
 _STRIP_PUNCT = str.maketrans("", "", string.punctuation)
-_LOG_SPANS = ("silence_wait_ms", "stt_ms", "retrieval_ms", "llm_ttft_ms", "filter_ms", "tts_first_audio_ms",
+_LOG_SPANS = ("silence_wait_ms", "stt_ms", "diar_wait_ms", "retrieval_ms", "llm_ttft_ms", "filter_ms", "tts_first_audio_ms",
               "playback_ms", "perceived_ms", "total_ms")
 
 

@@ -20,6 +20,8 @@ STAGES: tuple[str, ...] = (
     "endpoint",          # silence wait over, recording stops
     "stt_start",         # final transcription starts
     "stt_done",          # recorder.text() returned
+    "diar_start",        # speaker decision starts
+    "diar_done",         # speaker decision made
     "input",             # typed send_text received (typed turns only)
     "retrieval_start",   # RAG retrieval starts (only when RAG is on)
     "retrieval_done",    # retriever returned or failed
@@ -35,7 +37,7 @@ STAGES: tuple[str, ...] = (
 )
 
 SPANS: tuple[str, ...] = (
-    "silence_wait_ms", "stt_ms", "retrieval_ms", "llm_ttft_ms", "filter_ms", "tts_first_audio_ms",
+    "silence_wait_ms", "stt_ms", "diar_wait_ms", "retrieval_ms", "llm_ttft_ms", "filter_ms", "tts_first_audio_ms",
     "playback_ms", "perceived_ms", "llm_total_ms", "total_ms",
 )
 
@@ -112,11 +114,13 @@ class TurnTimer:
         if origin is None:
             return {"marks": {s: None for s in STAGES}, "spans": {s: None for s in SPANS + BARGE_SPANS}}
         inp = g("input") if "input" in m else g("stt_done")
-        llm_start = g("retrieval_done") if "retrieval_done" in m else inp  # LLM spans are the LLM's own time
+        # LLM spans are the LLM's own time
+        llm_start = g("retrieval_done") if "retrieval_done" in m else g("diar_done") if "diar_done" in m else inp
         heard = g("playback_started") if "playback_started" in m else g("tts_first_audio")
         spans = {
             "silence_wait_ms": _ms(g("speech_end"), g("endpoint")),
             "stt_ms": _ms(g("endpoint"), g("stt_done")),
+            "diar_wait_ms": _ms(g("diar_start"), g("diar_done")),
             "retrieval_ms": _ms(g("retrieval_start"), g("retrieval_done")),
             "llm_ttft_ms": _ms(llm_start, g("llm_first_token")),
             "filter_ms": _ms(g("llm_first_token"), g("first_text")),
@@ -149,7 +153,8 @@ _CONTEXT_KEYS = ("llm_backend", "model_label", "audio_io", "stt_model", "stt_dev
                  "tts_fast_sentence_fragment", "tts_sentence_silence_ms", "kokoro_speed",
                  "rag_enabled", "rag_embedder", "rag_top_k", "rag_min_score", "rag_max_context_chars",
                  "rag_chunk_size", "rag_chunk_overlap", "rag_chunks_used", "rag_context_chars", "rag_error",
-                 "barge_in_mode", "barge_in_min_ms", "barge_false_triggers")
+                 "barge_in_mode", "barge_in_min_ms", "barge_false_triggers",
+                 "diarization", "diar_mode", "diar_speaker", "diar_lag_ms", "diar_rejects", "diar_rtf")
 
 
 def fmt_ms(ms: int | None) -> str:
@@ -163,9 +168,21 @@ def format_turn(record: dict) -> str:
     ts = str(record.get("ts", ""))
     ts = ts.replace("T", " ").replace("+00:00", " UTC") if ts else "-"
     if "event" in record:
-        head = [str(record["event"]), f"turn {record.get('turn_id', '?')}"]
+        head = [str(record["event"])]
+        if record.get("turn_id") is not None:
+            head.append(f"turn {record['turn_id']}")
         if record.get("barge_in_mode") is not None:
             head.append(f"{record['barge_in_mode']} {record.get('barge_in_min_ms', '?')} ms")
+        if record.get("diar_mode") is not None:
+            head.append(str(record["diar_mode"]))
+        if record.get("load_ms") is not None:
+            head.append(f"load {record['load_ms']} ms")
+        if record.get("reason") is not None:
+            head.append(str(record["reason"]))
+        if record.get("speaker") is not None:
+            head.append(f"speaker {record['speaker']}")
+        if record.get("text") is not None:
+            head.append(f'"{record["text"]}"')
         return f"=== {' | '.join(head)} | {ts} ===\n\n"
     head = [f"Turn {record.get('turn_id', '?')}", str(record.get("source", "?"))]
     if record.get("interrupted"):

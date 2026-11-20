@@ -15,7 +15,7 @@ def test_voice_turn_spans():
         at(tm, c, st, t)
     r = tm.report()
     assert r["marks"]["speech_end"] == 0 and r["marks"]["endpoint"] == 600 and r["marks"]["input"] is None
-    assert r["spans"] == {"silence_wait_ms": 600, "stt_ms": 200, "retrieval_ms": None, "llm_ttft_ms": 300, "filter_ms": 20,
+    assert r["spans"] == {"silence_wait_ms": 600, "stt_ms": 200, "diar_wait_ms": None, "retrieval_ms": None, "llm_ttft_ms": 300, "filter_ms": 20,
                           "tts_first_audio_ms": 180, "playback_ms": 40, "perceived_ms": 1340,
                           "llm_total_ms": 1100, "total_ms": 4000,
                           "barge_detect_ms": None, "barge_cut_ms": None}
@@ -140,3 +140,32 @@ def test_event_record_is_one_line(tmp_path):
     assert format_turn(ev) == "=== barge_false_fire | turn 3 | onset 200 ms | 2026-11-20 10:00:00.000 UTC ===\n\n"
     p = tmp_path / "turns.log"; append_turn_text(p, ev)
     assert p.read_text().count("\n") == 2 and "Turn" not in p.read_text()
+
+
+def test_diar_wait_span_and_llm_starts_after_the_decision():
+    from voicebot.timing import SPANS
+    clock = iter([0.0, 0.1, 0.2, 0.5, 0.9, 1.4]).__next__
+    t = TurnTimer(clock=clock)
+    for s in ("speech_end", "endpoint", "stt_done", "diar_start", "diar_done", "llm_first_token"):
+        t.mark(s)
+    sp = t.report()["spans"]
+    assert sp["diar_wait_ms"] == 400 and sp["llm_ttft_ms"] == 500   # LLM time starts at diar_done
+    assert SPANS.index("diar_wait_ms") == SPANS.index("stt_ms") + 1
+
+
+def test_format_turn_prints_diarization_fields_and_events():
+    from voicebot.timing import format_turn
+    rec = {"turn_id": 3, "source": "voice", "spans": {}, "diarization": True, "diar_mode": "ultra_low_latency",
+           "diar_speaker": 0, "diar_lag_ms": 120, "diar_rejects": 1, "diar_rtf": 0.08}
+    text = format_turn(rec)
+    for part in ("diarization=True", "diar_mode=ultra_low_latency", "diar_speaker=0", "diar_lag_ms=120",
+                 "diar_rejects=1", "diar_rtf=0.08", "diar_wait"):
+        assert part in text
+    on = format_turn({"event": "diarizer_on", "ts": "2026-11-20T10:00:00.000+00:00", "diar_mode": "low_latency", "load_ms": 4200})
+    assert on.startswith("=== diarizer_on | low_latency | load 4200 ms |") and "turn" not in on
+    off = format_turn({"event": "diarizer_off", "ts": "x", "reason": "overflow"})
+    assert "diarizer_off | overflow" in off
+    ign = format_turn({"event": "diar_ignored", "ts": "x", "speaker": 1, "text": "hello there", "diar_mode": "low_latency"})
+    assert 'speaker 1 | "hello there"' in ign
+    ff = format_turn({"event": "barge_false_fire", "ts": "x", "turn_id": 2, "barge_in_mode": "onset", "barge_in_min_ms": 200})
+    assert "barge_false_fire | turn 2 | onset 200 ms" in ff          # v3 line unchanged
