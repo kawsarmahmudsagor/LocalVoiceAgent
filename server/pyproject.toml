@@ -19,6 +19,7 @@ dependencies = [
 transformers = ["transformers", "accelerate", "bitsandbytes>=0.45"]
 dev = ["pytest", "httpx"]
 rag = ["chromadb", "sentence-transformers", "pypdf", "python-docx"]
+diarization = ["transformers==5.23.0", "accelerate"]
 
 [tool.setuptools.packages.find]
 include = ["voicebot*"]

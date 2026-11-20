@@ -213,4 +213,26 @@ No GPU, model or network in automated tests.
 
 ## 8. Dependency check result
 
-To be filled in by plan Task 1: transformers version, torch version, runtime (in process or worker), and model load time on the RTX 5090.
+Measured on 2026-11-20 on the Linux VM (RTX 5090 32 GB, NVIDIA driver 580.178.04, Ubuntu 24.04).
+
+**Runtime: in process.** The server venv `.venv` already had transformers **5.23.0** (the latest PyPI release), which contains `nemotron3_diarization`, with torch **2.7.1+cu128**. No upgrade and no git pin were needed. The extra `diarization = ["transformers==5.23.0", "accelerate"]` pins it, and `scripts/setup_venv.sh` installs it.
+
+**`uv pip check` on `.venv`:** three incompatibilities, all present before v4 and not caused by it. gradio and gradio-client want huggingface-hub<2.0 (2.4.0 is installed). qwen-asr wants transformers==4.57.6 (5.23.0 is installed). Criterion applied: no new conflict was introduced.
+
+**Test suite:** pending on VM. The branch is not yet on the VM. The server suite passes on the Windows dev machine (370 passed, 1 known Windows-only failure).
+
+**Load time:** 33.7 s on the first run (includes the model download), 7.9 s warm.
+
+**Output is logits**, not probabilities. Values range from about -45.8 to +7.7, so the wrapper applies a sigmoid (`OUTPUT_IS_LOGITS = True`).
+
+**Forward call:** `model(**inputs.to(device, dtype=model.dtype), speaker_cache=cache)` works as written. It returns `.logits` with shape (1, n, 8) and `.speaker_cache`.
+
+**Probe clip:** 13.5 s, two voices (A 0–5 s, B 5.25–10.25 s, A 10.5–13.5 s), 16 kHz mono, built from RealtimeTTS test WAVs. All three modes labelled A as Speaker 0, B as Speaker 1, and A again as Speaker 0. `ultra_low_latency` also produced one 0.11 s spurious Speaker 1 blip at 1.09 s.
+
+| mode | latency ms | num_samples_first_audio_chunk | num_samples_per_audio_chunk | num_mel_frames_per_step | audio_chunk_start(mel_per_step) | output frames per step | probe RTF, eager bf16 |
+|---|---|---|---|---|---|---|---|
+| ultra_low_latency | 320 | 5160 | 5520 | 24 | 3584 | 24 | 0.175 |
+| very_low_latency | 640 | 10280 | 10640 | 48 | 7424 | 48 | 0.051 |
+| low_latency | 1040 | 16680 | 17040 | 72 | 11264 | 72 | 0.032 |
+
+**Task 4 smoke** (`python -m voicebot.diarizer --smoke`, `ultra_low_latency` through the `Diarizer`, 20 ms pieces): load 7.9 s, RTF 0.141, covered 13.20 s of 13.5 s, speakers per second correct.
