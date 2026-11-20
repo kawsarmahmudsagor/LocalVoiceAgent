@@ -152,7 +152,8 @@ def build_session(settings: Settings):
         voice=voice, voices=voices, info=info, timer=timer,
         metrics_sink=lambda record: (append_jsonl(TURNS_LOG, record), append_turn_text(TURNS_TEXT_LOG, record)),
         models=models, callbacks=callbacks, rag=rag,
-        word_aligner=_build_word_aligner(s), word_align=s.word_align)
+        word_aligner=_build_word_aligner(s), word_align=s.word_align,
+        diarizer_factory=_build_diarizer_factory(s))
     holder.append(session)
     _close_session = session.close
     # audio.recorder, not recorder: a model switch replaces it.
@@ -168,6 +169,18 @@ def _build_word_aligner(s: Settings):
     except Exception:
         log.exception("word alignment is unavailable")
         return None
+
+
+def _build_diarizer_factory(s: Settings) -> Callable | None:
+    """The v4 diarizer factory (browser audio only, else None). It imports voicebot.diarizer when first
+    called, so a server that never switches diarization on never imports it or transformers."""
+    if s.audio_io != "browser":
+        return None
+
+    def factory(on_error: Callable[[str, str], None]):
+        from voicebot.diarizer import Diarizer, NemotronModel
+        return Diarizer(NemotronModel(device="cuda"), on_error=on_error)
+    return factory
 
 
 def _build_rag(s: Settings, on_event: Callable[[dict], None]):

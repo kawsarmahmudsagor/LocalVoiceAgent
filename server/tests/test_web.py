@@ -135,3 +135,15 @@ def test_session_callbacks_name_real_session_methods():
     for name, cb in session_callbacks(holder).items():
         cb(*(["x"] if name == "on_realtime_transcription_update" else []))
     assert len(names) == 5 and all(hasattr(VoiceSession, n) for n in names)
+
+def test_server_does_not_import_diarization_when_off():
+    import subprocess, sys
+    code = ("import sys, voicebot.web, voicebot.session, voicebot.audio_io; "
+            "bad = {'voicebot.diarizer', 'transformers'} & set(sys.modules); assert not bad, bad")
+    subprocess.run([sys.executable, "-c", code], check=True)
+
+def test_diarizer_factory_only_in_browser_mode():
+    from voicebot.web import _build_diarizer_factory
+    from voicebot.config import Settings
+    assert _build_diarizer_factory(Settings.load({"AUDIO_IO": "server"}, platform="win32")) is None
+    assert callable(_build_diarizer_factory(Settings.load({}, platform="linux")))

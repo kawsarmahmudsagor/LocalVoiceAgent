@@ -932,3 +932,108 @@ def test_words_mode_arms_mid_utterance_with_onset(make, backend, sink, events, t
     s.on_recording_stop()                                    # ended without a real word
     backend.gate.set(); r = wait_for(lambda: next((x for x in sink if "event" not in x), None))
     assert r["barge_false_triggers"] == 1
+
+
+# ---------- v4: speaker diarization lifecycle (plan Task 6) ----------
+
+class FakeDiarizer:
+    """Scripted timeline. share() pops from shares (None: not covered yet) and then repeats the last value."""
+    def __init__(self, ready=True, fail_load=None):
+        self.ready, self.fail_load, self.mode = ready, fail_load, "ultra_low_latency"
+        self.pos = self.cov = 0; self.speaker = 0; self.shares = [1.0]; self.windows = []
+        self.loads = self.resets = 0; self.started = False; self.on_error = None; self.load_gate = None
+    def load(self):
+        self.loads += 1
+        if self.load_gate: self.load_gate.wait(2)
+        if self.fail_load: raise RuntimeError(self.fail_load)
+        self.ready = True
+    def set_mode(self, m): self.mode = m; self.reset()
+    def start(self): self.started = True
+    def stop(self): self.started = False
+    def feed(self, pcm): pass
+    def position(self): return self.pos
+    def covered(self): return self.cov
+    def speaker_between(self, s, e): self.windows.append((s, e)); return self.speaker
+    def share(self, spk, s, e):
+        self.windows.append((s, e)); return self.shares.pop(0) if len(self.shares) > 1 else self.shares[0]
+    def reset(self): self.resets += 1
+    def rtf(self): return 0.1
+
+@pytest.fixture
+def diar(): return FakeDiarizer()
+
+def diar_session(make, fd, **extra):
+    def factory(on_error): fd.on_error = on_error; return fd
+    return make(diarizer_factory=factory, **extra)
+
+def diar_events(events): return [e for e in events if e["type"] == "diarization"]
+
+def turn_on(s, events):
+    s.handle({"type": "update_settings", "diarization": True})
+    wait_for(lambda: diar_events(events) and diar_events(events)[-1]["state"] == "ready")
+
+def test_diar_settings_validated_and_reported(make, diar, events):
+    s = diar_session(make, diar)
+    for bad in ({"diarization": "yes"}, {"diar_mode": "fast"}, {"diar_wait_ms": 2001}, {"diar_wait_ms": True}):
+        s.handle({"type": "update_settings", **bad})
+    assert [e["code"] for e in events if e["type"] == "error"] == ["bad_settings"] * 4
+    s.handle({"type": "update_settings", "diar_mode": "low_latency", "diar_wait_ms": 0})
+    c = s.config(); d = c["defaults"]
+    assert d["diarization"] is False and d["diar_mode"] == "low_latency" and d["diar_wait_ms"] == 0
+    assert c["diarization_available"] is True
+
+def test_diar_defaults_and_unavailable_without_factory(session, events):
+    c = session.config()
+    assert c["defaults"]["diarization"] is False and c["defaults"]["diar_mode"] == "ultra_low_latency"
+    assert c["defaults"]["diar_wait_ms"] == 600 and c["diarization_available"] is False
+    session.handle({"type": "update_settings", "diarization": True})
+    assert diar_events(events)[-1]["state"] == "error" and session.diarization is False
+
+def test_diar_on_off_attaches_logs_and_writes_events(make, diar, events, audio, sink, caplog):
+    diar.ready = False; s = diar_session(make, diar)
+    with caplog.at_level(logging.INFO, logger="voicebot.session"):
+        turn_on(s, events)
+        assert [e["state"] for e in diar_events(events)] == ["loading", "ready"]
+        assert audio.diarizer is diar and diar.started and s.config()["defaults"]["diarization"] is True
+        s.handle({"type": "update_settings", "diarization": False})
+    assert audio.diarizer is None and not diar.started and diar_events(events)[-1]["state"] == "off"
+    on, off = [r for r in sink if "event" in r]
+    assert on["event"] == "diarizer_on" and on["diar_mode"] == "ultra_low_latency" and isinstance(on["load_ms"], int)
+    assert off["event"] == "diarizer_off" and off["reason"] == "user" and "ts" in off
+    assert "diarizer on: mode=ultra_low_latency" in caplog.text and "diarizer off: user" in caplog.text
+
+def test_off_while_loading_stays_off(make, diar, events, audio, sink):          # Review Focus 3
+    diar.ready = False; diar.load_gate = threading.Event(); s = diar_session(make, diar)
+    s.handle({"type": "update_settings", "diarization": True})
+    s.handle({"type": "update_settings", "diarization": False}); diar.load_gate.set()
+    time.sleep(0.1)
+    assert getattr(audio, "diarizer", None) is None and s.diarization is False
+    assert not any(r.get("event") == "diarizer_on" for r in sink)
+
+def test_load_failure_reports_error(make, events, sink):
+    fd = FakeDiarizer(ready=False, fail_load="no cuda"); s = diar_session(make, fd)
+    s.handle({"type": "update_settings", "diarization": True})
+    wait_for(lambda: diar_events(events)[-1]["state"] == "error")
+    assert "no cuda" in diar_events(events)[-1]["message"] and s.diarization is False
+    assert sink[-1]["event"] == "diarizer_off" and sink[-1]["reason"] == "error"
+
+def test_diarizer_error_switches_off(make, diar, events, audio, sink):
+    s = diar_session(make, diar); turn_on(s, events)
+    diar.on_error("overflow", "50 frames dropped")
+    assert s.diarization is False and audio.diarizer is None
+    assert diar_events(events)[-1] == {"type": "diarization", "state": "error", "message": "50 frames dropped"}
+    assert sink[-1]["event"] == "diarizer_off" and sink[-1]["reason"] == "overflow"
+
+def test_clear_switch_and_mode_change_reset(make, diar, events):
+    s = diar_session(make, diar); turn_on(s, events); base = diar.resets
+    s.handle({"type": "clear"}); assert diar.resets == base + 1
+    s.handle({"type": "update_settings", "diar_mode": "low_latency"})
+    assert diar.mode == "low_latency" and diar.resets == base + 2
+
+def test_model_switch_resets_the_diarizer(session_with_models, diar, events):
+    s = session_with_models
+    def factory(on_error): diar.on_error = on_error; return diar
+    s.diarizer_factory = factory
+    turn_on(s, events); base = diar.resets
+    s.handle({"type": "select_model", "role": "tts", "slug": "kokoro"})
+    wait_for(lambda: not s._switching.locked() and diar.resets > base)

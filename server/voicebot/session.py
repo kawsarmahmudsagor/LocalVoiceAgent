@@ -35,6 +35,7 @@ from voicebot.timing import TurnTimer
 from voicebot.tts import drain_audio_queue, list_voices, output_format as tts_output_format, set_voice
 
 if TYPE_CHECKING:  # the RAG package imports chromadb; keep it out of the session's import path
+    from voicebot.diarizer import Diarizer
     from voicebot.rag.service import RagService
 
 log = logging.getLogger(__name__)
@@ -43,6 +44,10 @@ APOLOGY = "Sorry, something went wrong."
 PLAYBACK_MARGIN_S = 0.25  # browser playback slack after the estimated end of the audio
 SOURCE_PREVIEW_CHARS = 160  # spec §3.2: the Sources line shows the first 160 characters of each chunk
 _STRIP_PUNCT = str.maketrans("", "", string.punctuation)
+# Copied from voicebot.diarizer.MODES: importing that module here would pull numpy and the model code into
+# a server that runs with diarization off.
+DIAR_MODES = ("ultra_low_latency", "very_low_latency", "low_latency")
+DIAR_UNAVAILABLE = "Speaker diarization is not available on this server (browser audio only)."
 _LOG_SPANS = ("silence_wait_ms", "stt_ms", "diar_wait_ms", "retrieval_ms", "llm_ttft_ms", "filter_ms", "tts_first_audio_ms",
               "playback_ms", "perceived_ms", "total_ms")
 
@@ -65,7 +70,8 @@ class VoiceSession:
                  metrics_sink: Callable[[dict], None] | None = None, ack_timeout: float = 1.0,
                  models=None, callbacks: dict | None = None, rag: RagService | None = None,
                  word_aligner=None, word_align: bool = False, barge_in_mode: str = "off",
-                 barge_in_min_ms: int = 200) -> None:
+                 barge_in_min_ms: int = 200,
+                 diarizer_factory: Callable[[Callable[[str, str], None]], Diarizer] | None = None) -> None:
         self.backend, self.audio, self.stream, self.conversation = backend, audio, stream, conversation
         self.params, self.voice, self.voices, self.info = params, voice, list(voices), dict(info)
         self.timer = timer if timer is not None else TurnTimer()
@@ -116,6 +122,18 @@ class VoiceSession:
         self._align_wanted = False
         if word_align:
             self._set_word_align(True)
+        # v4 speaker diarization. diarizer_factory(on_error) builds the Diarizer on first switch-on (None:
+        # unavailable). _diar_lock guards diarization, _diar_wanted, _diar_loading, _diarizer, diar_mode and
+        # audio.diarizer. It is only held for quick flag flips, set_mode/start and emits, never across a model
+        # load, stop() or a model switch, so _on_diar_error (on the audio or diarizer thread) can always take it.
+        self.diarizer_factory = diarizer_factory
+        self._diar_lock = threading.Lock()
+        self._diarizer = None
+        self._diar_wanted = False    # the latest on/off request; a load that finishes checks it
+        self._diar_loading = False   # a load thread is running: another "on" does not start a second one
+        self.diarization = False     # on and attached to the audio
+        self.diar_mode = "ultra_low_latency"
+        self.diar_wait_ms = 600      # guarded by _state_lock
 
     # ---------- wiring ----------
 
@@ -158,12 +176,17 @@ class VoiceSession:
             p, prompt, voice = self.params, self.conversation.system_prompt, self.voice
             template = self.conversation.rag_template
             barge_mode, barge_min = self.barge_in_mode, self.barge_in_min_ms
+            diar_wait = self.diar_wait_ms
+        with self._diar_lock:
+            diar_on, diar_mode = self.diarization, self.diar_mode
         cfg = {**self.info, "voices": list(self.voices), "output_format": self.audio.output_format,
                "defaults": {"system_prompt": prompt, "temperature": p.temperature, "top_p": p.top_p,
                             "max_tokens": p.max_tokens, "voice": voice, "rag_template": template,
                             "word_align": self.word_align, "barge_in_mode": barge_mode,
-                            "barge_in_min_ms": barge_min},
-               "barge_words_available": self.barge_words_available()}
+                            "barge_in_min_ms": barge_min, "diarization": diar_on, "diar_mode": diar_mode,
+                            "diar_wait_ms": diar_wait},
+               "barge_words_available": self.barge_words_available(),
+               "diarization_available": self.diarization_available()}
         if self.models is not None:
             m, st = self.models.current, self.models.settings
             cfg.update(stt_final=m.get("stt_final"), stt_realtime=m.get("stt_realtime", "off"), tts=m.get("tts"),
@@ -172,6 +195,9 @@ class VoiceSession:
 
     def barge_words_available(self) -> bool:
         return self.models is not None and self.models.current.get("stt_realtime", "off") != "off"
+
+    def diarization_available(self) -> bool:
+        return self.diarizer_factory is not None and self.audio.output_format is not None
 
     def catalog(self) -> list[dict]:
         if self.models is None:
@@ -340,11 +366,23 @@ class VoiceSession:
                                              and not isinstance(cmd["barge_in_min_ms"], bool)
                                              and 0 <= cmd["barge_in_min_ms"] <= 1000):
             bad.append("barge_in_min_ms must be an integer from 0 to 1000")
+        if "diarization" in cmd and not isinstance(cmd["diarization"], bool):
+            bad.append("diarization must be true or false")
+        if "diar_mode" in cmd and cmd["diar_mode"] not in DIAR_MODES:
+            bad.append("diar_mode must be ultra_low_latency, very_low_latency or low_latency")
+        if "diar_wait_ms" in cmd and not (isinstance(cmd["diar_wait_ms"], int)
+                                          and not isinstance(cmd["diar_wait_ms"], bool)
+                                          and 0 <= cmd["diar_wait_ms"] <= 2000):
+            bad.append("diar_wait_ms must be an integer from 0 to 2000")
         if bad:
             self._error("bad_settings", "; ".join(bad))
             return
         if "word_align" in cmd:
             self._set_word_align(cmd["word_align"])
+        if "diar_mode" in cmd:   # before switching on, so a combined update starts in the new mode
+            self._set_diar_mode(cmd["diar_mode"])
+        if "diarization" in cmd:
+            self._set_diarization(cmd["diarization"])
         stale = False
         with self._state_lock:
             changes = {k: cmd[k] for k in ("temperature", "top_p", "max_tokens") if k in cmd}
@@ -363,6 +401,8 @@ class VoiceSession:
                     self.barge_in_mode = cmd["barge_in_mode"]
             if "barge_in_min_ms" in cmd:
                 self.barge_in_min_ms = cmd["barge_in_min_ms"]
+            if "diar_wait_ms" in cmd:
+                self.diar_wait_ms = cmd["diar_wait_ms"]
         if stale:
             self._error("bad_settings", "barge_in_mode words needs a realtime STT model")
 
@@ -403,6 +443,146 @@ class VoiceSession:
         self.audio.word_aligner = aligner
         self.word_align = True
         self._emit({"type": "word_align", "state": "ready"})
+
+    # ---------- v4: speaker diarization ----------
+
+    def _active_diarizer(self):
+        """The diarizer when diarization is on and attached to the audio, else None."""
+        d = self._diarizer
+        if self.diarization and d is not None and getattr(self.audio, "diarizer", None) is d:
+            return d
+        return None
+
+    def _set_diar_mode(self, mode: str) -> None:
+        with self._diar_lock:
+            self.diar_mode = mode
+            d = self._active_diarizer()
+            if d is not None:
+                try:
+                    d.set_mode(mode)   # resets the timeline
+                except Exception:
+                    log.exception("diarizer set_mode failed")
+
+    def _set_diarization(self, on: bool) -> None:
+        """Switch speaker diarization. The first switch-on loads the model off the event loop; the browser
+        hears {"type": "diarization", "state": "loading" | "ready" | "off" | "error"}, like word_align.
+
+        _diar_wanted records the latest request, and a finished load enables the diarizer only if it is still
+        set, so on -> off (or on -> off -> on -> off) during one load ends off. _diar_loading makes a second
+        "on" during a load wait for that load instead of starting another."""
+        if not on:
+            self._diarization_off()
+            return
+        if not self.diarization_available():
+            self._emit({"type": "diarization", "state": "error", "message": DIAR_UNAVAILABLE})
+            return
+        with self._diar_lock:
+            self._diar_wanted = True
+            if self.diarization:
+                self._emit({"type": "diarization", "state": "ready"})
+                return
+            if self._diar_loading:
+                self._emit({"type": "diarization", "state": "loading"})
+                return
+            d = self._diarizer
+            if d is None:
+                try:
+                    d = self._diarizer = self.diarizer_factory(self._on_diar_error)
+                except Exception as e:
+                    log.exception("building the diarizer failed")
+                    self._diar_wanted = False
+                    self._emit({"type": "diarization", "state": "error",
+                                "message": f"Building the diarizer failed: {e}"})
+                    return
+            load = not d.ready
+            if load:
+                self._diar_loading = True
+                self._emit({"type": "diarization", "state": "loading"})
+        if load:
+            self._spawn(lambda: self._load_diarizer(d), "diarizer-load")
+        else:
+            self._enable_diarizer(d, 0)
+
+    def _load_diarizer(self, d) -> None:
+        t0 = time.monotonic()
+        try:
+            d.load()
+        except Exception as e:
+            log.exception("loading the diarization model failed")
+            with self._diar_lock:
+                self._diar_loading = False
+                wanted, self._diar_wanted = self._diar_wanted, False
+                if wanted:
+                    self._emit({"type": "diarization", "state": "error",
+                                "message": f"Loading the diarization model failed: {e}"})
+            if wanted:
+                self._write_event({"event": "diarizer_off", "reason": "error"})
+            return
+        with self._diar_lock:
+            self._diar_loading = False
+        self._enable_diarizer(d, round((time.monotonic() - t0) * 1000))
+
+    def _enable_diarizer(self, d, load_ms: int) -> None:
+        """Start and attach d if diarization is still wanted (it may have been switched off while loading)."""
+        with self._diar_lock:
+            if not self._diar_wanted or self.diarization:
+                return
+            mode = self.diar_mode
+            try:
+                d.set_mode(mode)   # resets: a restart after an error gets a fresh stream
+                d.start()
+            except Exception as e:
+                log.exception("starting the diarizer failed")
+                self._diar_wanted = False
+                self._emit({"type": "diarization", "state": "error", "message": f"Starting the diarizer failed: {e}"})
+                return
+            self.audio.diarizer = d
+            self.diarization = True
+            self._emit({"type": "diarization", "state": "ready"})
+        log.info("diarizer on: mode=%s load_ms=%d", mode, load_ms)
+        self._write_event({"event": "diarizer_on", "diar_mode": mode, "load_ms": load_ms})
+
+    def _diarization_off(self) -> None:
+        with self._diar_lock:
+            self._diar_wanted = False
+            was_on, d = self.diarization, self._diarizer
+            if was_on:
+                self.audio.diarizer = None
+                self.diarization = False
+            self._emit({"type": "diarization", "state": "off"})
+        if not was_on or d is None:
+            return
+        # Outside _diar_lock: stop() joins the diarizer thread, whose on_error may be waiting for that lock.
+        try:
+            d.stop()
+            d.reset()
+        except Exception:
+            log.exception("stopping the diarizer failed")
+        log.info("diarizer off: user")
+        self._write_event({"event": "diarizer_off", "reason": "user"})
+
+    def _on_diar_error(self, reason: str, message: str) -> None:
+        """The Diarizer gave up: "overflow" (on the websocket audio thread, inside feed) or "error" (on the
+        diarizer thread). Quick and non-blocking: detach and report. Never stop() here: that thread is ending."""
+        with self._diar_lock:
+            if not self.diarization:
+                return
+            self.audio.diarizer = None
+            self.diarization = False
+            self._diar_wanted = False
+            self._emit({"type": "diarization", "state": "error", "message": message})
+        log.warning("diarizer off: %s (%s)", reason, message)
+        self._write_event({"event": "diarizer_off", "reason": reason})
+
+    def _reset_diarizer(self) -> None:
+        """Clear and model switches: the next voice heard becomes Speaker 0."""
+        d = self._active_diarizer()
+        if d is None:
+            return
+        try:
+            d.reset()
+        except Exception:
+            log.exception("diarizer reset failed")
 
     # ---------- v3: RAG settings (spec §4.5) ----------
 
@@ -533,6 +713,7 @@ class VoiceSession:
             log.exception("model switch %s=%s failed", role, slug)
             self._emit({"type": "model_status", "role": role, "slug": slug, "state": "failed", "message": str(e)})
         finally:
+            self._reset_diarizer()   # after any switch, success or failure
             self._switching.release()
             if was_listening:
                 self._start_listening({})
@@ -561,6 +742,7 @@ class VoiceSession:
         with self._state_lock:
             self._barge_pending = None
         self.conversation.clear()
+        self._reset_diarizer()
 
     # ---------- barge-in (spec §2) ----------
     # Public recorder callbacks, called from RealtimeSTT's threads at any time. Each one reads and
@@ -719,10 +901,14 @@ class VoiceSession:
     def _log_false_fire(self, pending: dict) -> None:
         """A fired barge-in whose utterance transcribed as noise: one event record (spec §2 step 3, §4)."""
         log.info("barge-in on turn %d was a false fire (noise transcript)", pending["turn_id"])
+        self._write_event({"event": "barge_false_fire", **pending})
+
+    def _write_event(self, record: dict) -> None:
+        """One event record for metrics_sink: the record plus ts, the server info and the model slugs."""
         if self.metrics_sink is None:
             return
-        record = {"event": "barge_false_fire", "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
-                  **pending, **self.info}
+        record = {"event": record.get("event"), "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"),
+                  **record, **self.info}
         if self.models is not None:
             m = self.models.current
             record.update(stt_final=m.get("stt_final"), stt_realtime=m.get("stt_realtime", "off"),
@@ -994,6 +1180,17 @@ class VoiceSession:
             aborter.start()
             aborter.join(timeout=2)
         self._stop_speaking({})
+        with self._diar_lock:
+            self._diar_wanted = False   # a load still running will not enable it
+            d = self._diarizer
+            if self.diarization:
+                self.audio.diarizer = None
+                self.diarization = False
+        if d is not None:
+            try:
+                d.stop()
+            except Exception:
+                log.exception("stopping the diarizer failed")
         for t in [self._listen_thread, self._stopper, *self._threads]:
             if t is not None and t is not threading.current_thread():
                 t.join(timeout=5)
