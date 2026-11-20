@@ -53,12 +53,16 @@ def default_catalog(settings: Settings):
 def session_callbacks(holder: list) -> dict[str, Callable]:
     """Recorder callbacks that forward to the session once holder[0] is filled.
 
-    They return None: a truthy return from some RealtimeSTT callbacks aborts transcription.
+    They return None: a truthy return from some RealtimeSTT callbacks aborts transcription. They never
+    raise: RealtimeSTT's recording worker re-raises a callback's exception, which stops STT until a restart.
     """
     def to_session(name: str) -> Callable[..., None]:
         def call(*args) -> None:
             if holder:
-                getattr(holder[0], name)(*args)
+                try:
+                    getattr(holder[0], name)(*args)
+                except Exception:
+                    log.exception("session callback %s failed", name)
             return None
         return call
 

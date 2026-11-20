@@ -112,3 +112,26 @@ def test_session_callbacks_route_to_session():
     cb["on_realtime_transcription_update"]("hi"); cb["on_recording_start"](); cb["on_recording_stop"]()
     cb["on_turn_detection_start"](); cb["on_turn_detection_stop"]()
     assert calls == [("partial", "hi"), "start", "stop", "pause", "resume"]
+
+
+def test_session_callbacks_swallow_session_errors(caplog):
+    # A raise would reach RealtimeSTT's recorder thread, which re-raises it and stops STT.
+    from voicebot.web import session_callbacks
+    def boom(*_a): raise RuntimeError("boom")
+    holder = [NS(on_partial=boom, on_recording_start=boom, on_recording_stop=boom, on_speech_pause=boom,
+                 on_speech_resume=boom)]
+    cb = session_callbacks(holder)
+    assert cb["on_realtime_transcription_update"]("hi") is None
+    for name in ("on_recording_start", "on_recording_stop", "on_turn_detection_start", "on_turn_detection_stop"):
+        assert cb[name]() is None
+    assert "boom" in caplog.text
+
+
+def test_session_callbacks_name_real_session_methods():
+    from voicebot.session import VoiceSession
+    from voicebot.web import session_callbacks
+    names = []
+    holder = [type("Spy", (), {"__getattr__": lambda self, n: (names.append(n), lambda *a: None)[1]})()]
+    for name, cb in session_callbacks(holder).items():
+        cb(*(["x"] if name == "on_realtime_transcription_update" else []))
+    assert len(names) == 5 and all(hasattr(VoiceSession, n) for n in names)
