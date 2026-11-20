@@ -53,7 +53,9 @@ All changes are in `server/voicebot/session.py`, plus the STT callback wiring in
    - These are public RealtimeSTT callbacks. The existing timing callbacks in `stt.timing_callbacks` stay; the session chains its own handlers after them.
 4. **Trigger, `words` mode.**
    - `on_recording_start` marks `barge_onset` as above (no timer).
-   - The first `on_partial` text that `is_noise` does not reject fires the barge-in. Rejected partials increment `barge_false_triggers`.
+   - The first `on_partial` text that `is_noise` does not reject fires the barge-in.
+   - A recording that stops (`on_recording_stop`) before any such partial increments `barge_false_triggers` once. Counting each rejected partial would count one cough many times.
+   - In `onset` mode, speech resuming (`on_turn_detection_stop` while a recording is active) after a cancelled timer re-arms the onset, because RealtimeSTT does not fire `on_recording_start` again inside the same recording.
 5. **Fire.** Runs the existing `_stop_speaking` path (sets `stop_event`, `audio.cut()`, `player.stop(immediate=True)`, `stream.stop()` on a helper thread). It also marks `barge_in` on the turn timer and emits `{"type": "barge_in", "turn_id"}`. Only the first trigger in a turn fires; `stop_event` guards it.
 6. **Next turn.** Nothing extra. The listen loop returns to `recorder.text()`, which picks up the queued (or still running) recording. A cancelled onset (a cough) also leaves a recording; its transcript is filtered by `is_noise` as today.
 7. **Disarming.** Mic off, `clear`, a model switch or the end of the turn disarms. A pending onset timer is cancelled.
