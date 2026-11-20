@@ -23,10 +23,17 @@ def test_summarize_barge_groups_interrupted_turns():
     r = lambda mode, d, c, ft: {"interrupted": True, "barge_in_mode": mode, "barge_false_triggers": ft,
                                 "spans": {"barge_detect_ms": d, "barge_cut_ms": c}}
     rows = summarize_barge([r("onset", 200, 260, 1), r("onset", 220, 300, 0), r("words", 500, 560, 2),
-                            {"interrupted": False, "spans": {"barge_detect_ms": None}},
-                            {"interrupted": True, "spans": {"barge_detect_ms": None}}],   # Stop button: no onset
+                            {"interrupted": False, "barge_in_mode": "onset", "barge_false_triggers": 2,
+                             "spans": {"barge_detect_ms": None}},
+                            {"interrupted": False, "barge_in_mode": "silent", "barge_false_triggers": None,
+                             "spans": {}},
+                            {"interrupted": True, "barge_in_mode": "off", "spans": {"barge_detect_ms": None}},
+                            {"interrupted": True, "spans": {"barge_detect_ms": None}}],   # Stop button / old log
                            group_by=("barge_in_mode",))
     g = {row["group"]["barge_in_mode"]: row for row in rows}
-    assert g["onset"]["n"] == 2 and g["onset"]["false_triggers"] == 1
+    assert g["onset"]["armed"] == 3 and g["onset"]["n"] == 2 and g["onset"]["false_triggers"] == 3
     assert g["onset"]["spans"]["barge_detect_ms"] == {"median": 210, "p90": 220}
-    assert g["words"]["spans"]["barge_cut_ms"] == {"median": 560, "p90": 560} and len(rows) == 2
+    assert g["words"]["spans"]["barge_cut_ms"] == {"median": 560, "p90": 560}
+    assert g["silent"]["armed"] == 1 and g["silent"]["n"] == 0 and g["silent"]["false_triggers"] == 0
+    assert g["silent"]["spans"] == {"barge_detect_ms": None, "barge_cut_ms": None}
+    assert len(rows) == 3

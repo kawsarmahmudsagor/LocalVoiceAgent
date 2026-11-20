@@ -23,6 +23,11 @@ def _p90(values: list[int]) -> int:
     return v[math.ceil(0.9 * len(v)) - 1]
 
 
+def _stat(recs: list[dict], span: str) -> dict | None:
+    vals = [v for v in ((r.get("spans") or {}).get(span) for r in recs) if v is not None]
+    return {"median": round(statistics.median(vals)), "p90": _p90(vals)} if vals else None
+
+
 def summarize(records: list[dict], group_by: tuple[str, ...]) -> list[dict]:
     groups: dict[tuple, list[dict]] = {}
     for r in records:
@@ -32,30 +37,24 @@ def summarize(records: list[dict], group_by: tuple[str, ...]) -> list[dict]:
         groups.setdefault(key, []).append(r)
     rows = []
     for key, recs in groups.items():
-        spans: dict[str, dict | None] = {}
-        for span in SPANS:
-            vals = [r.get("spans", {}).get(span) for r in recs]
-            vals = [v for v in vals if v is not None]
-            spans[span] = {"median": round(statistics.median(vals)), "p90": _p90(vals)} if vals else None
+        spans = {span: _stat(recs, span) for span in SPANS}
         rows.append({"group": dict(zip(group_by, key)), "n": len(recs), "spans": spans})
     return rows
 
 
 def summarize_barge(records: list[dict], group_by: tuple[str, ...]) -> list[dict]:
-    """Interrupted turns that have a barge onset (Stop-button cuts have none), per group."""
+    """Per group of armed turns (barge_in_mode set and not "off"): armed count, false triggers over
+    all armed turns, and spans over interrupted turns with a barge onset (Stop-button cuts have none)."""
     groups: dict[tuple, list[dict]] = {}
     for r in records:
-        if r.get("interrupted") and (r.get("spans") or {}).get("barge_detect_ms") is not None:
+        if r.get("barge_in_mode") not in (None, "off"):
             groups.setdefault(tuple(r.get(k) for k in group_by), []).append(r)
     rows = []
     for key, recs in groups.items():
-        spans: dict[str, dict | None] = {}
-        for span in BARGE_SPANS:
-            vals = [v for v in ((r.get("spans") or {}).get(span) for r in recs) if v is not None]
-            spans[span] = {"median": round(statistics.median(vals)), "p90": _p90(vals)} if vals else None
-        rows.append({"group": dict(zip(group_by, key)), "n": len(recs),
+        cut = [r for r in recs if r.get("interrupted") and (r.get("spans") or {}).get("barge_detect_ms") is not None]
+        rows.append({"group": dict(zip(group_by, key)), "armed": len(recs), "n": len(cut),
                      "false_triggers": sum(r.get("barge_false_triggers") or 0 for r in recs),
-                     "spans": spans})
+                     "spans": {span: _stat(cut, span) for span in BARGE_SPANS}})
     return rows
 
 
@@ -103,7 +102,7 @@ def main(argv: list[str] | None = None) -> int:
         print("barge-in")
         for row in barge:
             title = "  ".join(f"{k}={v}" for k, v in row["group"].items())
-            print(f"{title}  (n={row['n']}, false_triggers={row['false_triggers']})")
+            print(f"{title}  (armed={row['armed']}, n={row['n']}, false_triggers={row['false_triggers']})")
             print(f"  {'span':<20}{'median':>8}{'p90':>8}")
             for span in BARGE_SPANS:
                 s = row["spans"][span]
