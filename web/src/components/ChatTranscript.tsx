@@ -19,6 +19,7 @@ export function ChatTranscript({ messages, partial }: { messages: ChatMessage[];
           <div className="msg-role">{m.role === "user" ? "You" : "Assistant"}</div>
           <div className="msg-text">
             {m.text}
+            {m.unheard && <span className="unheard">{m.unheard}</span>}
             {m.streaming && <span className="cursor" aria-hidden="true" />}
             {m.interrupted && <span className="tag">interrupted</span>}
           </div>

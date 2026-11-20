@@ -211,6 +211,7 @@ button.ghost { background: transparent; }
 .meter { height: 6px; border-radius: 3px; background: var(--panel-2); border: 1px solid var(--border); overflow: hidden; }
 .meter-fill { height: 100%; background: var(--accent); transition: width 0.2s; }
 .meter-over .meter-fill { background: var(--warn); }
+.unheard { color: var(--muted); opacity: 0.6; }
 .msg-partial .msg-text { color: var(--muted); font-style: italic; }
 .pill-loading { border-color: var(--warn); color: var(--warn); }
 

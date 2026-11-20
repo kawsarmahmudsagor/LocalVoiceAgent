@@ -1,4 +1,4 @@
-import type { CatalogEntry, Defaults, Role, ServerConfig, Status, WordAlignState } from "../protocol";
+import type { BargeInMode, CatalogEntry, Defaults, Role, ServerConfig, Status, WordAlignState } from "../protocol";
 import type { AppState } from "../state";
 import { vramUsed } from "../vram";
 
@@ -142,6 +142,25 @@ export function SettingsPanel({ config, settings, onChange, catalog, switching, 
             ? <p className="field-error" role="alert">{wordAlign.message}</p>
             : <p className="hint">{ALIGN_NOTE[wordAlign.state]}</p>}
         </div>
+      )}
+
+      {config?.defaults.barge_in_mode !== undefined && (
+        <>
+          <div className="field">
+            <label htmlFor="barge-in">Barge-in</label>
+            <select id="barge-in" value={settings?.barge_in_mode ?? config.defaults.barge_in_mode} disabled={disabled}
+              onChange={e => onChange({ barge_in_mode: e.target.value as BargeInMode })}>
+              <option value="off">Off</option>
+              <option value="onset">Voice onset</option>
+              <option value="words" disabled={config.barge_words_available !== true}>First words</option>
+            </select>
+          </div>
+          <Slider label="Min speech (ms)" value={settings?.barge_in_min_ms ?? config.defaults.barge_in_min_ms ?? 0}
+            min={0} max={1000} step={50}
+            disabled={disabled || (settings?.barge_in_mode ?? config.defaults.barge_in_mode) === "off"}
+            onChange={v => onChange({ barge_in_min_ms: v })} />
+          <p className="hint">Speak over the bot to stop it. Use headphones for clean measurements.</p>
+        </>
       )}
 
       <p className="hint">Backend and audio mode are set in <code>.env</code> and apply on restart. Models switch while idle.</p>

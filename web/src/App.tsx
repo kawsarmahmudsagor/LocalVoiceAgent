@@ -13,7 +13,7 @@ import { createExclusive } from "./exclusive";
 import { deleteDocument, ragLocked, reindexAll, uploadDocuments } from "./rag";
 import { initialState, reducer, type AppState } from "./state";
 import { VoiceSocket, socketUrl } from "./ws";
-import { SentenceWords, type TurnWord } from "./words";
+import { HeardText, SentenceWords, type TurnWord } from "./words";
 
 const SETTINGS_DEBOUNCE_MS = 300;
 const TAB_KEY = "voicebot.tab";
@@ -34,6 +34,7 @@ export default function App() {
   const mic = useRef<{ stop(): void } | null>(null);
   const turnId = useRef<number | null>(null);
   const sentenceWords = useRef(new SentenceWords());
+  const heard = useRef(new HeardText());
   const ackedTurn = useRef<number | null>(null);
   const pendingPatch = useRef<Partial<Defaults>>({});
   const debounce = useRef<number | undefined>(undefined);
@@ -41,6 +42,13 @@ export default function App() {
   const stopMic = useCallback(() => {
     mic.current?.stop();
     mic.current = null;
+  }, []);
+
+  // Silence the player and tell the server which words the user actually heard.
+  const cutPlayback = useCallback((id: number) => {
+    player.current?.flush();
+    sentenceWords.current.reset();
+    socket.current?.send({ type: "playback_cut", turn_id: id, heard: heard.current.text(id) });
   }, []);
 
   useEffect(() => {
@@ -71,18 +79,25 @@ export default function App() {
           turnId.current = e.turn_id;
           player.current?.resetClock(); // the previous reply has finished playing before a new turn starts
           sentenceWords.current.reset();
+          heard.current.reset(e.turn_id);
         }
+        if (e.type === "barge_in" && e.turn_id === turnId.current) cutPlayback(e.turn_id);
         // The reply appears word by word as its audio plays: each word is shown when playback reaches it.
         const show = (words: TurnWord[]) => {
           for (const w of words) {
-            const spoken = () => dispatch({ kind: "spoken", turn_id: w.turn_id, text: w.word });
+            const spoken = () => {
+              heard.current.add(w.turn_id, w.word);
+              dispatch({ kind: "spoken", turn_id: w.turn_id, text: w.word });
+            };
             if (player.current) player.current.schedule(w.at, spoken);
             else spoken();
           }
         };
         if (e.type === "assistant_segment") {
-          if (e.at_s == null) dispatch({ kind: "spoken", turn_id: e.turn_id, text: e.text }); // PC speakers: at once
-          else show(sentenceWords.current.segment({ turn_id: e.turn_id, text: e.text, at_s: e.at_s }));
+          if (e.at_s == null) { // PC speakers: at once
+            heard.current.add(e.turn_id, e.text);
+            dispatch({ kind: "spoken", turn_id: e.turn_id, text: e.text });
+          } else show(sentenceWords.current.segment({ turn_id: e.turn_id, text: e.text, at_s: e.at_s }));
           return;
         }
         if (e.type === "assistant_words") {
@@ -102,7 +117,7 @@ export default function App() {
       playerRate.current = null;
       window.clearTimeout(debounce.current);
     };
-  }, [stopMic]);
+  }, [stopMic, cutPlayback]);
 
   const onSettingsChange = (patch: Partial<Defaults>) => {
     dispatch({ kind: "settings", patch });
@@ -154,8 +169,11 @@ export default function App() {
 
   const onStop = () => {
     socket.current?.send({ type: "stop_speaking" });
-    player.current?.flush();
-    sentenceWords.current.reset();
+    if (turnId.current != null) cutPlayback(turnId.current);
+    else {
+      player.current?.flush();
+      sentenceWords.current.reset();
+    }
   };
 
   const onSelectModel = (role: Role, slug: string) => {
