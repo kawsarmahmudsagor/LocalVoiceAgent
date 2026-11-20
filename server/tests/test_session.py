@@ -198,7 +198,7 @@ def test_typed_turn_event_order_and_history(session, events, conv):
     assert types(events)[-3:] == ["assistant_done", "metrics", "status"]
     states = [e["state"] for e in events if e["type"] == "status"]; assert states == ["thinking", "speaking", "idle"]
     done = next(e for e in events if e["type"] == "assistant_done")
-    assert done == {"type": "assistant_done", "text": "Hello there.", "interrupted": False}
+    assert done == {"type": "assistant_done", "text": "Hello there.", "interrupted": False, "heard": None}
     assert conv.turns == [("Hi", "Hello there.")]
     m = next(e for e in events if e["type"] == "metrics")
     assert m["source"] == "text" and m["turn_id"] == events[0]["turn_id"] == 1 and m["interrupted"] is False
@@ -269,7 +269,7 @@ def test_empty_send_text_ignored(session, backend, events):                  # R
 def test_llm_error_apologizes_and_recovers(failing_session, stream, events, conv):  # Review Focus 4
     failing_session.handle({"type": "send_text", "text": "x"}); wait_for(lambda: events and events[-1].get("state") == "idle")
     assert any(e["type"] == "error" and e["code"] == "llm_error" for e in events) and stream.fed_text == APOLOGY
-    assert {"type": "assistant_done", "text": APOLOGY, "interrupted": False} in events
+    assert {"type": "assistant_done", "text": APOLOGY, "interrupted": False, "heard": None} in events
     assert "metrics" not in types(events) and conv.turns == []
 
 def test_update_settings_next_turn(session, backend, stream):
@@ -704,7 +704,6 @@ def test_not_armed_when_off_or_mic_off(make, backend, events):
     assert "barge_in" not in types(events)
     backend.gate.set(); wait_for(lambda: "assistant_done" in types(events))
     s.handle({"type": "stop_listening"}); wait_for(lambda: not s.audio.recorder.waiting)
-    s.on_recording_stop()
     s.handle({"type": "update_settings", "barge_in_mode": "onset", "barge_in_min_ms": 0})
     events.clear(); backend.gate.clear()
     s.handle({"type": "send_text", "text": "Again"}); wait_for(lambda: "assistant_delta" in types(events))
@@ -730,3 +729,123 @@ def test_mic_off_and_clear_disarm(make, events, cmd):
     s = armed(make, "onset", 100); s.on_recording_start()
     s.handle({"type": cmd}); time.sleep(0.2)
     assert "barge_in" not in types(events)
+
+
+# ---------- barge-in follow-ups from the Task 4 review ----------
+
+def test_mic_off_clears_recording(make, events, backend):
+    # RealtimeSTT may not fire on_recording_stop on abort(): a stale _recording must not let a later
+    # on_speech_resume (or arming) start a phantom onset.
+    s = make(); s.handle({"type": "update_settings", "barge_in_mode": "onset", "barge_in_min_ms": 0})
+    s.handle({"type": "start_listening"}); wait_for(lambda: s.audio.recorder.waiting)
+    s.on_recording_start()                                   # idle: not armed, but recording
+    s.handle({"type": "stop_listening"}); wait_for(lambda: not s.audio.recorder.waiting)
+    assert s._recording is False
+    s.handle({"type": "start_listening"}); wait_for(lambda: s.audio.recorder.waiting)
+    backend.gate = threading.Event()
+    s.handle({"type": "send_text", "text": "Hi"}); wait_for(lambda: "assistant_delta" in types(events))
+    s.on_speech_resume(); time.sleep(0.1)
+    assert "barge_in" not in types(events)
+
+def test_close_clears_recording(session):
+    session.on_recording_start(); session.close()
+    assert session._recording is False
+
+def test_hold_before_turn_is_armed(make, timer):
+    # The hold must be active before a recorder callback can see the turn armed and mark.
+    seen = []
+    real_hold = timer.hold
+    s = make()
+    timer.hold = lambda: (seen.append(s._barge_turn), real_hold())[1]
+    s.handle({"type": "update_settings", "barge_in_mode": "onset"})
+    s.handle({"type": "start_listening"}); wait_for(lambda: s.audio.recorder.waiting)
+    s.handle({"type": "send_text", "text": "Hi"}); wait_for(lambda: seen)
+    assert seen == [None]
+
+def test_onset_recording_stop_cancels_pending_timer(make, backend, sink, events):
+    s = armed(make, "onset", 200); s.on_recording_start(); s.on_recording_stop(); time.sleep(0.3)
+    assert "barge_in" not in types(events)
+    backend.gate.set(); wait_for(lambda: sink)
+    assert sink[0]["barge_false_triggers"] == 1 and sink[0]["marks"]["barge_onset"] is None
+
+def test_onset_pause_then_stop_counts_once(make, backend, sink, events):
+    s = armed(make, "onset", 200); s.on_recording_start(); s.on_speech_pause(); s.on_recording_stop()
+    backend.gate.set(); wait_for(lambda: sink)
+    assert sink[0]["barge_false_triggers"] == 1
+
+def test_onset_arms_mid_utterance(make, backend, events):
+    s = make(); s.handle({"type": "update_settings", "barge_in_mode": "onset", "barge_in_min_ms": 30})
+    s.handle({"type": "start_listening"}); wait_for(lambda: s.audio.recorder.waiting)
+    s.on_recording_start()                                   # the user is already speaking
+    backend.gate = threading.Event()
+    s.handle({"type": "send_text", "text": "Hi"})
+    ev = wait_for(lambda: next((e for e in events if e["type"] == "barge_in"), None))
+    assert ev["turn_id"] == 1
+
+
+# ---------- barge-in: history cut from playback_cut (Task 5) ----------
+
+def test_barge_cut_stores_heard_text(make, conv, events):
+    s = armed(make, "onset", 0); s.on_recording_start()
+    wait_for(lambda: "barge_in" in types(events))
+    s.handle({"type": "playback_cut", "turn_id": 1, "heard": "Hello"})
+    done = wait_for(lambda: next((e for e in events if e["type"] == "assistant_done"), None))
+    assert done["heard"] == "Hello" and done["text"] == "Hello" and conv.turns == [("Hi", "Hello")]
+
+def test_cut_ack_before_wait_is_kept(gated_session, conv, events, audio, timer):     # Review Focus 3
+    audio.play_seconds = 5.0
+    gated_session.handle({"type": "send_text", "text": "Hi"}); wait_for(lambda: "assistant_delta" in types(events))
+    gated_session.handle({"type": "playback_cut", "turn_id": 1, "heard": "Hel"})   # before stop
+    assert timer.has("playback_cut")
+    gated_session.handle({"type": "stop_speaking"})
+    wait_for(lambda: conv.turns)
+    assert conv.turns == [("Hi", "Hel")]
+
+def test_empty_heard_stores_no_exchange(gated_session, conv, events, sink):
+    gated_session.handle({"type": "send_text", "text": "Hi"}); wait_for(lambda: "assistant_delta" in types(events))
+    gated_session.handle({"type": "stop_speaking"})
+    gated_session.handle({"type": "playback_cut", "turn_id": 1, "heard": ""})
+    done = wait_for(lambda: next((e for e in events if e["type"] == "assistant_done"), None))
+    assert done["heard"] == "" and done["interrupted"] is True and conv.turns == []
+    wait_for(lambda: sink); assert sink[0]["heard"] == ""
+
+def test_no_ack_keeps_full_reply(gated_session, conv, events, sink):
+    gated_session.handle({"type": "send_text", "text": "Hi"}); wait_for(lambda: "assistant_delta" in types(events))
+    gated_session.handle({"type": "stop_speaking"})
+    done = wait_for(lambda: next((e for e in events if e["type"] == "assistant_done"), None))
+    assert conv.turns[0][1] == done["text"] != "" and done["heard"] is None
+    wait_for(lambda: sink); assert sink[0]["heard"] is None
+
+@pytest.mark.parametrize("cut", [{"turn_id": 99, "heard": "x"}, {"turn_id": 1, "heard": 5}, {"turn_id": 1},
+                                 {"turn_id": "1", "heard": "x"}, {"turn_id": True, "heard": "x"}])
+def test_stale_cut_ignored(gated_session, conv, events, cut):
+    gated_session.handle({"type": "send_text", "text": "Hi"}); wait_for(lambda: "assistant_delta" in types(events))
+    gated_session.handle({"type": "playback_cut", **cut})
+    gated_session.handle({"type": "stop_speaking"})
+    done = wait_for(lambda: next((e for e in events if e["type"] == "assistant_done"), None))
+    assert "error" not in types(events) and conv.turns == [("Hi", done["text"])] and done["text"] != ""
+    assert done["heard"] is None
+
+def test_stop_button_uses_heard_text(gated_session, conv, events):            # Review Focus 4 (mode off)
+    gated_session.handle({"type": "send_text", "text": "Hi"}); wait_for(lambda: "assistant_delta" in types(events))
+    gated_session.handle({"type": "stop_speaking"})
+    gated_session.handle({"type": "playback_cut", "turn_id": 1, "heard": "Hel"})
+    wait_for(lambda: conv.turns)
+    assert conv.turns == [("Hi", "Hel")]
+
+def test_cut_when_idle_is_ignored(session, events):
+    session.handle({"type": "playback_cut", "turn_id": 1, "heard": "x"}); assert events == []
+
+def test_uninterrupted_turn_does_not_wait(session, events, conv):
+    session.ack_timeout = 1.0
+    t0 = time.monotonic(); session.handle({"type": "send_text", "text": "Hi"})
+    done = wait_for(lambda: next((e for e in events if e["type"] == "assistant_done"), None))
+    assert time.monotonic() - t0 < 0.5 and done["heard"] is None and conv.turns == [("Hi", "Hello there.")]
+
+def test_server_mode_does_not_wait_for_cut(gated_session, audio, conv, events):
+    audio.output_format = None
+    gated_session.ack_timeout = 1.0
+    gated_session.handle({"type": "send_text", "text": "Hi"}); wait_for(lambda: "assistant_delta" in types(events))
+    t0 = time.monotonic(); gated_session.handle({"type": "stop_speaking"})
+    done = wait_for(lambda: next((e for e in events if e["type"] == "assistant_done"), None))
+    assert time.monotonic() - t0 < 0.5 and done["heard"] is None and conv.turns[0][1] == done["text"]

@@ -79,6 +79,10 @@ class VoiceSession:
         self._turn_id = 0
         self._current_turn: int | None = None
         self._ack = threading.Event()
+        # playback_cut ack for the current turn (spec §3 "History cut"), cleared at turn start. The browser
+        # can send it before the turn reaches its wait, so it is stored, not just signalled.
+        self._cut = threading.Event()
+        self._cut_heard: str | None = None   # guarded by _state_lock
         self._pending_voice: str | None = None
         self._status: str | None = None
         self._listening = False
@@ -190,6 +194,7 @@ class VoiceSession:
             "update_settings": self._update_settings,
             "clear": self._clear,
             "playback_started": self._playback_started,
+            "playback_cut": self._playback_cut,
             "select_model": self._select_model,
             "update_rag": self._update_rag,
         }.get(kind)  # type: ignore[arg-type]
@@ -213,6 +218,8 @@ class VoiceSession:
             return
         self._listening = False
         self._disarm()
+        with self._state_lock:
+            self._recording = False   # abort() may not fire on_recording_stop
         # abort() can block until the recorder acknowledges, so keep it off the caller's thread.
         self._spawn(self.audio.recorder.abort, "stt-abort")
         if not self._turn_lock.locked():
@@ -273,6 +280,19 @@ class VoiceSession:
             return  # late ack or an old turn: ignore silently
         self.timer.mark("playback_started")
         self._ack.set()
+
+    def _playback_cut(self, cmd: dict) -> None:
+        """The browser stopped this turn's audio; heard is the reply text it had revealed (spec §3)."""
+        turn_id, heard = cmd.get("turn_id"), cmd.get("heard")
+        if not isinstance(turn_id, int) or isinstance(turn_id, bool) or not isinstance(heard, str):
+            return
+        with self._state_lock:
+            if self._current_turn is None or turn_id != self._current_turn or self._cut.is_set():
+                return  # late, stale or repeated ack: ignore silently
+            self._cut_heard = heard
+            # Marked under the lock: the turn clears _current_turn under it before timer.reset().
+            self.timer.mark("playback_cut")
+            self._cut.set()
 
     def _update_settings(self, cmd: dict) -> None:
         bad = []
@@ -535,10 +555,18 @@ class VoiceSession:
     def on_recording_stop(self) -> None:
         with self._state_lock:
             self._recording = False
-            if (self._barge_turn is not None and not self._barge_fired and self._barge_mode == "words"
-                    and self.timer.has("barge_onset")):
+            if self._barge_turn is None or self._barge_fired:
+                return
+            if self._barge_mode == "words" and self.timer.has("barge_onset"):
                 self._barge_false += 1   # the recording ended without a real word: a cough or a noise
                 self.timer.unmark("barge_onset")
+            elif self._barge_mode == "onset" and self._barge_timer is not None:
+                # The recording ended before min_ms without a pause callback. A pause that came first
+                # already cancelled the timer and counted it, so this cannot count twice.
+                self._barge_timer.cancel()
+                self._barge_timer = None
+                self.timer.unmark("barge_onset")
+                self._barge_false += 1
 
     def on_speech_pause(self) -> None:
         """Recorder on_turn_detection_start: the speech paused before the onset timer ran out."""
@@ -662,6 +690,8 @@ class VoiceSession:
             self._current_turn = turn_id
             self._stop_event = stop_event
             self._ack.clear()
+            self._cut.clear()
+            self._cut_heard = None
             params = self.params
             voice, self._pending_voice = self._pending_voice, None
             messages = self.conversation.messages(text)
@@ -719,18 +749,28 @@ class VoiceSession:
         if stopper is not None:
             stopper.join(timeout=5)  # let the previous turn's stop finish before playing again
         self._emit({"type": "user_transcript", "text": text, "turn_id": turn_id})
+        fire_now = False
         with self._state_lock:   # barge-in settings are read once per turn (spec §2)
             barge_mode, barge_min_ms = self.barge_in_mode, self.barge_in_min_ms
             armed = barge_mode != "off" and (source == "voice" or self._listening)
+            if armed:
+                # Before the turn is armed: a callback that sees it armed may mark at once, and the
+                # barge utterance's STT marks belong to the next turn.
+                self.timer.hold()
             self._barge_turn = turn_id if armed else None
             self._barge_mode = barge_mode if armed else "off"
             self._barge_min_ms = barge_min_ms
             self._barge_fired = False
             self._barge_false = 0
             self._barge_timer = None
-        if armed:
-            self.timer.hold()    # the barge utterance's STT marks belong to the next turn
-        else:
+            if armed and barge_mode == "onset" and self._recording:
+                # The user is already mid-utterance (e.g. during a typed turn): no on_recording_start
+                # will come for it, so the onset starts now.
+                self.timer.mark("barge_onset")
+                fire_now = self._start_barge_timer_locked()
+        if fire_now:
+            self._fire_barge(turn_id)
+        if not armed:
             self.audio.mute_input(True)
         try:
             dropped = drain_audio_queue(self.stream)
@@ -748,7 +788,7 @@ class VoiceSession:
                 # error there). Without this the turn would end silently as an empty reply.
                 log.error("turn %d: text-to-speech never read the LLM stream; see the RealtimeTTS error above", turn_id)
                 self._error("tts_error", "Text-to-speech failed before speaking; see the server log.")
-                self._emit({"type": "assistant_done", "text": "", "interrupted": False})
+                self._emit({"type": "assistant_done", "text": "", "interrupted": False, "heard": None})
                 return
             if not errors:
                 self._wait_for_browser_playback(audio_seconds, stop_event)
@@ -763,17 +803,22 @@ class VoiceSession:
                 self._error("llm_error", str(e))
                 self.stream.feed(APOLOGY)
                 self.audio.play(self.stream, lambda: self._set_status("speaking"))
-                self._emit({"type": "assistant_done", "text": APOLOGY, "interrupted": False})
+                self._emit({"type": "assistant_done", "text": APOLOGY, "interrupted": False, "heard": None})
                 return
 
             reply = "".join(parts)
             interrupted = stop_event.is_set()
-            if reply:
-                self.conversation.add_exchange(text, reply)
-            self._emit({"type": "assistant_done", "text": reply, "interrupted": interrupted})
+            heard = self._await_cut() if interrupted and browser else None
+            # History keeps only what the user heard (spec §3): the acked text, nothing for an empty
+            # ack, or the full reply when no ack came.
+            stored = reply if heard is None else heard
+            if stored:
+                self.conversation.add_exchange(text, stored)
+            self._emit({"type": "assistant_done", "text": reply, "interrupted": interrupted, "heard": heard})
             with self._state_lock:
                 barge_fields = {"barge_in_mode": self._barge_mode if armed else "off",
-                                "barge_in_min_ms": barge_min_ms, "barge_false_triggers": self._barge_false}
+                                "barge_in_min_ms": barge_min_ms, "barge_false_triggers": self._barge_false,
+                                "heard": heard}
             self._finish_metrics(turn_id, source, interrupted, params, reply, text, rag_fields, barge_fields)
         except Exception as e:
             log.exception("turn %d failed", turn_id)
@@ -822,6 +867,12 @@ class VoiceSession:
             for h in result.chunks]})
         return messages
 
+    def _await_cut(self) -> str | None:
+        """Wait up to ack_timeout for this turn's playback_cut; the heard text, or None without an ack."""
+        self._cut.wait(self.ack_timeout)
+        with self._state_lock:
+            return self._cut_heard
+
     def _wait_for_browser_playback(self, audio_seconds: float | None, stop_event: threading.Event) -> None:
         """Browser mode: Kokoro synthesizes faster than real time, so play() returns while the
         browser still has audio queued. Keep the turn open (mic muted, status "speaking",
@@ -867,6 +918,8 @@ class VoiceSession:
         self._listening = False
         self._listen_gen += 1
         self._disarm()
+        with self._state_lock:
+            self._recording = False
         # Abort only to wake a listen thread blocked in recorder.text(). RealtimeSTT's abort()
         # waits forever when no text() is running and the recorder was left 'transcribing'
         # (after any Mic on -> off), so never call it unguarded and never wait unbounded.
