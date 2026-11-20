@@ -461,6 +461,8 @@ class VoiceSession:
         listener = self._listen_thread
         self._listening = False
         self._listen_gen += 1
+        with self._state_lock:
+            self._recording = False   # the recorder is aborted and replaced: its on_recording_stop never comes
         if listener is not None and listener.is_alive():
             recorder = self.audio.recorder
 
@@ -648,6 +650,11 @@ class VoiceSession:
         # safe for two concurrent text() calls, so wait for it to finish first.
         if previous is not None and previous is not threading.current_thread():
             previous.join()
+        if gen == self._listen_gen:
+            # No recording can be in progress before this run's first text(): drop a flag left by an
+            # earlier run whose abort() raced an on_recording_start.
+            with self._state_lock:
+                self._recording = False
         recorder = self.audio.recorder
 
         def current() -> bool:
@@ -768,11 +775,11 @@ class VoiceSession:
                 # will come for it, so the onset starts now.
                 self.timer.mark("barge_onset")
                 fire_now = self._start_barge_timer_locked()
-        if fire_now:
-            self._fire_barge(turn_id)
         if not armed:
             self.audio.mute_input(True)
         try:
+            if fire_now:
+                self._fire_barge(turn_id)
             dropped = drain_audio_queue(self.stream)
             if dropped:
                 log.info("dropped %d stale TTS audio chunks before turn %d", dropped, turn_id)
@@ -816,10 +823,11 @@ class VoiceSession:
                 self.conversation.add_exchange(text, stored)
             self._emit({"type": "assistant_done", "text": reply, "interrupted": interrupted, "heard": heard})
             with self._state_lock:
-                barge_fields = {"barge_in_mode": self._barge_mode if armed else "off",
-                                "barge_in_min_ms": barge_min_ms, "barge_false_triggers": self._barge_false,
-                                "heard": heard}
-            self._finish_metrics(turn_id, source, interrupted, params, reply, text, rag_fields, barge_fields)
+                # Barge-in settings and counts, plus heard (also set by a Stop-button cut with barge-in off).
+                interrupt_fields = {"barge_in_mode": self._barge_mode if armed else "off",
+                                    "barge_in_min_ms": barge_min_ms, "barge_false_triggers": self._barge_false,
+                                    "heard": heard}
+            self._finish_metrics(turn_id, source, interrupted, params, reply, text, rag_fields, interrupt_fields)
         except Exception as e:
             log.exception("turn %d failed", turn_id)
             self._error("llm_error", str(e))
@@ -889,7 +897,7 @@ class VoiceSession:
             stop_event.wait(remaining)
 
     def _finish_metrics(self, turn_id: int, source: str, interrupted: bool, params: GenerationParams,
-                        reply: str, transcript: str, rag_fields: dict, barge_fields: dict) -> None:
+                        reply: str, transcript: str, rag_fields: dict, interrupt_fields: dict) -> None:
         report = self.timer.report()
         metrics = {"type": "metrics", "turn_id": turn_id, "source": source, "interrupted": interrupted, **report}
         self._emit(metrics)
@@ -907,7 +915,7 @@ class VoiceSession:
             record.update(stt_final=m.get("stt_final"), stt_realtime=m.get("stt_realtime", "off"),
                           tts_model=m.get("tts"), runtime=self.models.runtime())
         record.update(rag_fields)
-        record.update(barge_fields)
+        record.update(interrupt_fields)
         record["word_align"] = self.word_align
         try:
             self.metrics_sink(record)

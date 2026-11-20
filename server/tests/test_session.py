@@ -747,6 +747,20 @@ def test_mic_off_clears_recording(make, events, backend):
     s.on_speech_resume(); time.sleep(0.1)
     assert "barge_in" not in types(events)
 
+def test_stt_switch_clears_recording(session_with_models, recorder, backend, events):   # fix round 1
+    # The switch aborts and replaces the recorder; the old recording's on_recording_stop never comes.
+    s = session_with_models
+    s.handle({"type": "update_settings", "barge_in_mode": "onset", "barge_in_min_ms": 30})
+    s.handle({"type": "start_listening"}); wait_for(lambda: recorder.waiting)
+    s.on_recording_start()                                   # idle: not armed, but recording
+    s.handle({"type": "select_model", "role": "stt_realtime", "slug": "nemotron-rt"})
+    wait_for(lambda: any(e["type"] == "model_status" and e["state"] == "ready" for e in events))
+    wait_for(lambda: not s._switching.locked() and s.audio.recorder.waiting)
+    backend.gate = threading.Event()
+    s.handle({"type": "send_text", "text": "Hi"}); wait_for(lambda: "assistant_delta" in types(events))
+    time.sleep(0.15)
+    assert "barge_in" not in types(events)
+
 def test_close_clears_recording(session):
     session.on_recording_start(); session.close()
     assert session._recording is False
