@@ -14,6 +14,7 @@ The project's purpose is to find out where the latency goes, using **only the re
 |---|---|---|
 | v1: the voice bot on Windows (RTX 4060, 8 GB) | Built on branch `feat/voice-bot`. Its manual end-to-end checks may still be open. | Spec `docs/superpowers/specs/2026-11-18-local-voice-bot-design.md`, plan `docs/superpowers/plans/2026-11-18-local-voice-bot.md` |
 | v2: Linux VM port, benchmark a curated engine pool, make the winners switchable in the UI | **Not started. Implement it on the VM.** | Spec `docs/superpowers/specs/2026-11-18-v2-model-switching-design.md`, plan `docs/superpowers/plans/2026-11-18-v2-linux-benchmark-shortlist.md` |
+| v3: voice barge-in | Built on branch `feat/v3-barge-In`. Manual checks on the VM still open. | Spec `docs/superpowers/specs/2026-11-20-barge-in-design.md`, plan `docs/superpowers/plans/2026-11-20-barge-in.md` |
 
 `docs/SPECIFICATIONS.md` is a plain-language overview of v1, written for humans.
 

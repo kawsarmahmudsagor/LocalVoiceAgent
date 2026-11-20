@@ -51,12 +51,13 @@ All changes are in `server/voicebot/session.py`, plus the STT callback wiring in
    - `on_turn_detection_start` before the timer runs out cancels it (the speech already ended) and increments `barge_false_triggers`.
    - When the timer runs out, the barge-in fires.
    - These are public RealtimeSTT callbacks. The existing timing callbacks in `stt.timing_callbacks` stay; the session chains its own handlers after them.
+   - **RealtimeSTT limit (found in the final review).** RealtimeSTT fires `on_turn_detection_start` only after `min_length_of_recording` (0.5 s by default) plus about 0.16 s of silence, and `on_recording_stop` also needs 0.5 s (`RealtimeSTT/RealtimeSTT/core/recording.py`, lines 398–421). So a short noise can cancel the timer only when `barge_in_min_ms` is above about 650 ms. Below that, the timer always runs out first and the noise fires the barge-in. The fast trigger stays. Instead, the session remembers each fired barge-in until the listen loop's next transcript. If `is_noise` rejects that transcript, the session writes a `barge_false_fire` record (see §4). Mic off, `clear` and a model switch drop the remembered barge-in.
 4. **Trigger, `words` mode.**
    - `on_recording_start` marks `barge_onset` as above (no timer).
    - The first `on_partial` text that `is_noise` does not reject fires the barge-in.
    - A recording that stops (`on_recording_stop`) before any such partial increments `barge_false_triggers` once. Counting each rejected partial would count one cough many times.
    - In `onset` mode, speech resuming (`on_turn_detection_stop` while a recording is active) after a cancelled timer re-arms the onset, because RealtimeSTT does not fire `on_recording_start` again inside the same recording.
-5. **Fire.** Runs the existing `_stop_speaking` path (sets `stop_event`, `audio.cut()`, `player.stop(immediate=True)`, `stream.stop()` on a helper thread). It also marks `barge_in` on the turn timer and emits `{"type": "barge_in", "turn_id"}`. Only the first trigger in a turn fires; `stop_event` guards it.
+5. **Fire.** Runs the existing `_stop_speaking` path (sets `stop_event`, `audio.cut()`, `player.stop(immediate=True)`, `stream.stop()` on a helper thread). It also marks `barge_in` on the turn timer (at fire time) and, after the cut, emits `{"type": "barge_in", "turn_id"}`. Cutting first keeps audio sent in between from reaching the browser after its flush. Only the first trigger in a turn fires. The user's Stop also disarms the turn, so an onset after Stop cannot fire.
 6. **Next turn.** Nothing extra. The listen loop returns to `recorder.text()`, which picks up the queued (or still running) recording. A cancelled onset (a cough) also leaves a recording; its transcript is filtered by `is_noise` as today.
 7. **Disarming.** Mic off, `clear`, a model switch or the end of the turn disarms. A pending onset timer is cancelled.
 
@@ -112,6 +113,8 @@ New record fields: `barge_in_mode`, `barge_in_min_ms`, `barge_false_triggers` (i
 
 `latency_report` keeps excluding interrupted turns from the reply-latency summaries. It adds a separate summary of the `barge_*` spans over interrupted turns, groupable by `barge_in_mode`.
 
+**False fires.** A barge-in whose utterance transcribes as noise (see §2 step 3) adds one event record to `logs/turns.jsonl`: `{"event": "barge_false_fire", "ts", "turn_id", "barge_in_mode", "barge_in_min_ms", ...}` plus the session info fields. `turn_id` is the turn that was cut. The reply-latency summary skips event records. The barge-in summary counts them per group as `false_fires`. `barge_false_triggers` still counts the onsets that were cancelled before they fired. In `logs/turns.log` an event record is one line, for example `=== barge_false_fire | turn 3 | onset 200 ms | <time> ===`.
+
 ## 5. Edge cases
 
 - **Barge-in during the apology** after an LLM error: armed like any other reply.
@@ -121,6 +124,7 @@ New record fields: `barge_in_mode`, `barge_in_min_ms`, `barge_false_triggers` (i
 - **`onset` with a realtime model loaded:** works; `on_recording_start` comes before any partial.
 - **Server audio mode (Windows v1):** the barge-in fires and stops playback through the same path. There is no browser, so no `playback_cut` arrives and history keeps the full reply. `barge_cut_ms` is `null`.
 - **Browser disconnects mid-turn:** no ack; the full reply is stored, as in rule 4 of §3.
+- **Known limitation: a noise and a real barge-in in one turn.** The timer keeps the first `speech_end` and `endpoint` marks it gets while a turn holds them. If a short noise and then a real barge-in both happen in one turn, the noise's marks win. The next turn can then show `null` for `silence_wait_ms` and `stt_ms`. A real fix needs marks kept per recording.
 
 ## 6. Testing
 
