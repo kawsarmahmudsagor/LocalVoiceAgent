@@ -595,3 +595,32 @@ def test_turn_log_records_word_align(make, events, sink, audio):
     wait_for(lambda: audio.__dict__.get("word_aligner") is fa)
     s.handle({"type": "send_text", "text": "Hi"}); wait_for(lambda: sink)
     assert sink[-1]["word_align"] is True
+
+
+def test_barge_settings_validated(session, events):
+    session.handle({"type": "update_settings", "barge_in_mode": "loud"})
+    session.handle({"type": "update_settings", "barge_in_min_ms": 1001})
+    session.handle({"type": "update_settings", "barge_in_min_ms": True})
+    session.handle({"type": "update_settings", "barge_in_mode": "words"})      # no realtime model
+    assert [e["code"] for e in events if e["type"] == "error"] == ["bad_settings"] * 4
+    session.handle({"type": "update_settings", "barge_in_mode": "onset", "barge_in_min_ms": 0})
+    d = session.config()["defaults"]
+    assert d["barge_in_mode"] == "onset" and d["barge_in_min_ms"] == 0
+    assert session.config()["barge_words_available"] is False
+
+
+def test_barge_defaults_off(session):
+    d = session.config()["defaults"]
+    assert d["barge_in_mode"] == "off" and d["barge_in_min_ms"] == 200
+
+
+def test_words_mode_falls_back_when_realtime_unloaded(session_with_models, events):
+    s = session_with_models
+    s.handle({"type": "select_model", "role": "stt_realtime", "slug": "nemotron-rt"})
+    wait_for(lambda: any(e.get("state") == "ready" for e in events if e["type"] == "model_status"))
+    assert s.barge_words_available()
+    s.handle({"type": "update_settings", "barge_in_mode": "words"}); assert s.barge_in_mode == "words"
+    events.clear()
+    s.handle({"type": "select_model", "role": "stt_realtime", "slug": "off"})
+    cfg = wait_for(lambda: next((e for e in events if e["type"] == "config"), None))
+    assert cfg["defaults"]["barge_in_mode"] == "onset" and cfg["barge_words_available"] is False

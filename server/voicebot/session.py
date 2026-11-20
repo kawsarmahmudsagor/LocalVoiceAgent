@@ -64,7 +64,8 @@ class VoiceSession:
                  voice: str, voices: list[str], info: dict, timer: TurnTimer | None = None,
                  metrics_sink: Callable[[dict], None] | None = None, ack_timeout: float = 1.0,
                  models=None, callbacks: dict | None = None, rag: RagService | None = None,
-                 word_aligner=None, word_align: bool = False) -> None:
+                 word_aligner=None, word_align: bool = False, barge_in_mode: str = "off",
+                 barge_in_min_ms: int = 200) -> None:
         self.backend, self.audio, self.stream, self.conversation = backend, audio, stream, conversation
         self.params, self.voice, self.voices, self.info = params, voice, list(voices), dict(info)
         self.timer = timer if timer is not None else TurnTimer()
@@ -89,6 +90,8 @@ class VoiceSession:
         self.callbacks = dict(callbacks or {})
         self._switching = threading.Lock()    # one select_model at a time
         self.rag = rag                        # v3 RagService, or None (RAG not configured)
+        self.barge_in_mode = barge_in_mode    # off | onset | words (guarded by _state_lock)
+        self.barge_in_min_ms = barge_in_min_ms
         # Forced word alignment for TTS engines without word timings: a voicebot.aligner.WordAligner (or None
         # when unavailable), switched on and off from the UI. Its model loads on first use.
         self._word_aligner = word_aligner
@@ -137,15 +140,21 @@ class VoiceSession:
         with self._state_lock:
             p, prompt, voice = self.params, self.conversation.system_prompt, self.voice
             template = self.conversation.rag_template
+            barge_mode, barge_min = self.barge_in_mode, self.barge_in_min_ms
         cfg = {**self.info, "voices": list(self.voices), "output_format": self.audio.output_format,
                "defaults": {"system_prompt": prompt, "temperature": p.temperature, "top_p": p.top_p,
                             "max_tokens": p.max_tokens, "voice": voice, "rag_template": template,
-                            "word_align": self.word_align}}
+                            "word_align": self.word_align, "barge_in_mode": barge_mode,
+                            "barge_in_min_ms": barge_min},
+               "barge_words_available": self.barge_words_available()}
         if self.models is not None:
             m, st = self.models.current, self.models.settings
             cfg.update(stt_final=m.get("stt_final"), stt_realtime=m.get("stt_realtime", "off"), tts=m.get("tts"),
                        gpu_total_mb=st.gpu_total_mb, llm_vram_mb=st.llm_vram_mb)
         return cfg
+
+    def barge_words_available(self) -> bool:
+        return self.models is not None and self.models.current.get("stt_realtime", "off") != "off"
 
     def catalog(self) -> list[dict]:
         if self.models is None:
@@ -268,6 +277,15 @@ class VoiceSession:
             bad.append("rag_template must be a string containing {context}")
         if "word_align" in cmd and not isinstance(cmd["word_align"], bool):
             bad.append("word_align must be true or false")
+        if "barge_in_mode" in cmd:
+            if cmd["barge_in_mode"] not in ("off", "onset", "words"):
+                bad.append("barge_in_mode must be off, onset or words")
+            elif cmd["barge_in_mode"] == "words" and not self.barge_words_available():
+                bad.append("barge_in_mode words needs a realtime STT model")
+        if "barge_in_min_ms" in cmd and not (isinstance(cmd["barge_in_min_ms"], int)
+                                             and not isinstance(cmd["barge_in_min_ms"], bool)
+                                             and 0 <= cmd["barge_in_min_ms"] <= 1000):
+            bad.append("barge_in_min_ms must be an integer from 0 to 1000")
         if bad:
             self._error("bad_settings", "; ".join(bad))
             return
@@ -283,6 +301,10 @@ class VoiceSession:
                 self.conversation.rag_template = cmd["rag_template"]
             if "voice" in cmd and cmd["voice"] != self.voice:
                 self.voice = self._pending_voice = cmd["voice"]
+            if "barge_in_mode" in cmd:
+                self.barge_in_mode = cmd["barge_in_mode"]
+            if "barge_in_min_ms" in cmd:
+                self.barge_in_min_ms = cmd["barge_in_min_ms"]
 
     # ---------- forced word alignment ----------
 
@@ -432,6 +454,11 @@ class VoiceSession:
                     return
             self._emit({"type": "model_status", "role": role, "slug": slug, "state": "ready",
                         "load_ms": round((time.monotonic() - t0) * 1000)})
+            if role != "tts":
+                with self._state_lock:
+                    if self.barge_in_mode == "words" and not self.barge_words_available():
+                        self.barge_in_mode = "onset"
+                self._emit({"type": "config", **self.config()})
         except Exception as e:
             log.exception("model switch %s=%s failed", role, slug)
             self._emit({"type": "model_status", "role": role, "slug": slug, "state": "failed", "message": str(e)})
