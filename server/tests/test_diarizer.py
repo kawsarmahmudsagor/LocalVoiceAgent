@@ -98,3 +98,15 @@ def test_module_imports_no_torch():
     import subprocess, sys
     code = "import voicebot.diarizer, sys; assert 'torch' not in sys.modules and 'transformers' not in sys.modules"
     subprocess.run([sys.executable, "-c", code], check=True)
+
+def test_stop_called_from_on_error_does_not_join_itself():
+    returned = threading.Event(); holder = {}
+    def on_error(r, m):
+        holder["d"].stop(); returned.set()                       # only reached if stop() returned
+    d = Diarizer(FakeModel(fail="boom"), on_error=on_error); holder["d"] = d
+    d.start(); d.feed(pcm(320))
+    assert returned.wait(2)
+    end = time.monotonic() + 2
+    while any(t.name == "diarizer" and t.is_alive() for t in threading.enumerate()) and time.monotonic() < end:
+        time.sleep(0.01)
+    assert not any(t.name == "diarizer" and t.is_alive() for t in threading.enumerate())
